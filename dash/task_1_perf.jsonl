@@ -1,0 +1,4 @@
+{"timestamp": "20260602_103109", "n_samples": 6, "accuracy": 1.0, "confusion_matrix": [[3, 0], [0, 3]], "class_distribution": {"Class A": 3, "Class B": 3}}
+{"timestamp": "20260602_112353", "n_samples": 9, "accuracy": 1.0, "confusion_matrix": [[6, 0], [0, 3]], "class_distribution": {"Class A": 6, "Class B": 3}}
+{"timestamp": "20260602_114649", "n_samples": 19, "accuracy": 1.0, "confusion_matrix": [[16, 0], [0, 3]], "class_distribution": {"Class A": 16, "Class B": 3}}
+{"timestamp": "20260602_114821", "n_samples": 29, "accuracy": 0.9655172413793104, "confusion_matrix": [[16, 0], [1, 12]], "class_distribution": {"Class A": 16, "Class B": 13}}

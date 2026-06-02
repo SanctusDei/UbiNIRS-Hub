@@ -25,20 +25,105 @@ NIRScanner::NIRScanner(uScanConfig *pConfig) {
         std::cout << "ERROR: Failed to open USB." << std::endl;
     }
 
-    // Reset error status.
-    this->resetErrorStatus();
+    // Wake device from hibernate/sleep BEFORE any queries.
+    // Without this, PGA query and RefCal fetches will read uninitialized registers.
+    // Use a retry loop because the device may need multiple wake attempts
+    // after deep hibernation.
+    const int MAX_WAKE_RETRIES = 3;
+    int pga_val = -1;
+    bool refcal_ok = false;
 
-    // Quary PGA gain.
-    int pga_val = NNO_GetPGAGain();
+    for (int attempt = 0; attempt < MAX_WAKE_RETRIES; attempt++) {
+        NNO_SetHibernate(false);
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        // Reset error status.
+        this->resetErrorStatus();
+
+        // Quick health probe: can we read device status?
+        unsigned int dev_status;
+        int status = NNO_ReadDeviceStatus(&dev_status);
+        if (status != PASS) {
+            std::cout << "WARNING: Device not responsive on wake attempt "
+                      << (attempt + 1) << "/" << MAX_WAKE_RETRIES << std::endl;
+            continue;
+        }
+
+        // Device is awake. Query PGA gain and validate range.
+        pga_val = NNO_GetPGAGain();
+        if (pga_val <= 0 || pga_val > 64) {
+            std::cout << "WARNING: PGA gain returned " << pga_val
+                      << " (suspicious), retrying..." << std::endl;
+            continue;
+        }
+
+        // Fetch reference calibration data.
+        if (PASS != mEvm.FetchRefCalData()) {
+            std::cout << "WARNING: FetchRefCalData failed on attempt "
+                      << (attempt + 1) << "/" << MAX_WAKE_RETRIES
+                      << ", retrying..." << std::endl;
+            continue;
+        }
+        if (PASS != mEvm.FetchRefCalMatrix()) {
+            std::cout << "WARNING: FetchRefCalMatrix failed on attempt "
+                      << (attempt + 1) << "/" << MAX_WAKE_RETRIES
+                      << ", retrying..." << std::endl;
+            continue;
+        }
+
+        // Final health check: verify the DLPC scan engine is actually
+        // ready.  Tiva may respond to status/PGA/RefCal queries while
+        // the DLPC150 is still offline after deep hibernation.
+        {
+            int scan_est = NNO_GetEstimatedScanTime();
+            if (scan_est <= 0 || scan_est > 30000) {
+                std::cout << "WARNING: DLPC scan estimate bogus ("
+                          << scan_est << "ms) on attempt "
+                          << (attempt + 1) << "/" << MAX_WAKE_RETRIES
+                          << ", retrying wake..." << std::endl;
+                continue;
+            }
+        }
+
+        refcal_ok = true;
+        break;
+    }
+
+    // Fallback: use safe defaults if all retries exhausted.
+    if (pga_val <= 0 || pga_val > 64) {
+        std::cout << "WARNING: All wake attempts exhausted. "
+                  << "PGA set to default 1." << std::endl;
+        pga_val = 1;
+    }
     this->mPrevPGAGain = pga_val;
     std::cout << "PGA gain: " << pga_val << std::endl;
 
-    // Fetch reference data.
-    if (PASS != mEvm.FetchRefCalData()) {
-        std::cout << "EVM FetchRefCalData failed." << std::endl;
+    if (!refcal_ok) {
+        std::cout << "WARNING: RefCal fetch failed after all retries. "
+                  << "Scan results may be degraded." << std::endl;
     }
-    if (PASS != mEvm.FetchRefCalMatrix()) {
-        std::cout << "EVM FetchRefCalMatrix failed." << std::endl;
+
+    // Diagnostic: check for DLPC-specific errors that may have accumulated
+    // during hibernation.  These flags explain WHY the DLPC might report
+    // bogus estimated scan times later.
+    {
+        NNO_error_status_struct errStatus;
+        if (NNO_ReadErrorStatus(&errStatus) == PASS) {
+            if (errStatus.status & NNO_ERROR_SCAN) {
+                std::cout << "WARNING: Device reports scan error status=0x"
+                          << std::hex << errStatus.status << std::dec;
+                if (errStatus.errorCodes.scan == NNO_ERROR_SCAN_DLPC150_BOOT_ERROR)
+                    std::cout << " (DLPC150 boot error)";
+                else if (errStatus.errorCodes.scan == NNO_ERROR_SCAN_DLPC150_INIT_ERROR)
+                    std::cout << " (DLPC150 init error)";
+                std::cout << " ！ DLPC may need recovery before next scan"
+                          << std::endl;
+            }
+            if (errStatus.status & NNO_ERROR_HW) {
+                std::cout << "WARNING: Device reports HW (DLPC150) error ！ "
+                          << "DLPC may be in bad state" << std::endl;
+            }
+        }
     }
 
     // Get reference data pointer.
@@ -187,9 +272,9 @@ void NIRScanner::configEVM(uScanConfig *pConfig)
         this->mConfig = *pConfig;
     }
 
-    int numpat = this->mEvm.ApplyScanCfgtoDevice(&this->mConfig);
-    if (numpat != mConfig.scanCfg.num_patterns) {
-        std::cout << "Apply scan config returned " << numpat << std::endl;
+    int ret = this->mEvm.ApplyScanCfgtoDevice(&this->mConfig);
+    if (ret < 0) {
+        std::cout << "Apply scan config FAILED (ret=" << ret << ")" << std::endl;
         return;
     }
 
@@ -213,7 +298,6 @@ void NIRScanner::setConfig(uint16_t scanConfigIndex,  // < Unique ID per spectro
 
     this->configEVM();
 }
-
 void NIRScanner::setPGAGain(int32_t newValue)
 /*
 * Set the PGA gain.
@@ -222,12 +306,17 @@ void NIRScanner::setPGAGain(int32_t newValue)
 */
 {
     int result;
-    int pga_val = NNO_GetPGAGain();
-    this->mPrevPGAGain = pga_val;
+    
+    // ==========================================
+    // [ ?????? 1 ]
+    // ????????? NNO_GetPGAGain() ??
+    // ??????λ??(Python)??????????????????????????????
+    // ==========================================
+    this->mPrevPGAGain = newValue;
 
     if(newValue == 0)
     {
-        result = NNO_SetFixedPGAGain(false, pga_val);
+        result = NNO_SetFixedPGAGain(false, 1);
     }
     else{
         result = NNO_SetFixedPGAGain(true, newValue);
@@ -239,8 +328,7 @@ void NIRScanner::setPGAGain(int32_t newValue)
 }
 
 void NIRScanner::setLampOnOff(int32_t newValue)
-/* 
-* Set the lamp always on or off. 
+/* * Set the lamp always on or off. 
 * @param newValue - I - if -1 then always off, if 0 then on when scanning, if 1 then always on. 
 */
 {
@@ -271,6 +359,7 @@ void NIRScanner::setLampOnOff(int32_t newValue)
         sleep(1);
 
         // Set manually control the lamp.
+        // ???????????????? ADC ???????PGA ???????? 1
         NNO_SetScanControlsDLPCOnOff(false);
 
         if(newValue == -1) {
@@ -283,51 +372,19 @@ void NIRScanner::setLampOnOff(int32_t newValue)
             printf("INFO: keeping lamp on.\n");
             NNO_DLPCEnable(true, true);
         }
-        else {
-            // This case is included in sanity check.
-        }
 
-        // Save current PGA gain and set it to 1.
-        int currentPGAGain = NNO_GetPGAGain();
-        if(currentPGAGain < 0) {
-            // Failed.
-            this->mPrevPGAGain = 1;
+        // ==========================================
+        // [ ?????? 2 ] 
+        // ???????????????????? NNO_GetPGAGain()
+        // ????????? mPrevPGAGain ????????????ι???????
+        // ==========================================
+        if(this->mPrevPGAGain > 0) {
+            NNO_SetFixedPGAGain(true, this->mPrevPGAGain);
+        } else {
+            NNO_SetFixedPGAGain(true, 1);
         }
-        else {
-            this->mPrevPGAGain = currentPGAGain;
-        }
-        // NNO_SetFixedPGAGain(true, 64);
-        NNO_SetFixedPGAGain(true, 1);
-
     }
-    // if(newValue) {
-    //     // Disable controlling the lamp when scanning.
-    //     NNO_SetScanControlsDLPCOnOff(false);
-    //     // Enable DLPC.
-    //     NNO_DLPCEnable(true, true);
-    //     // Save current PGA gain and set it to 64.
-    //     int currentPGAGain = NNO_GetPGAGain();
-    //     if(currentPGAGain < 0) {
-    //         // Failed.
-    //         this->mPrevPGAGain = 1;
-    //     }
-    //     else {
-    //         this->mPrevPGAGain = currentPGAGain;
-    //     }
-    //     // NNO_SetFixedPGAGain(true, 64);
-    //     NNO_SetFixedPGAGain(false, 64);
-    // } 
-    // else {
-    //     // Enable control when scanning.
-    //     NNO_SetScanControlsDLPCOnOff(true);
-    //     // Disable DLPC.
-    //     NNO_DLPCEnable(false, false);
-    //     // Set PGA Gain to auto.
-    //     NNO_SetFixedPGAGain(false, this->mPrevPGAGain);
-    // }
 }
-
-
 int NIRScanner::_performScanReadData(bool storeInSD, uint16 numRepeats, void *pData, int *pBytesRead)
 /*
  * This function asks the Nano to perform the scan and gets back the ScanData
@@ -351,46 +408,106 @@ int NIRScanner::_performScanReadData(bool storeInSD, uint16 numRepeats, void *pD
 
     // NNO_SetFixedPGAGain(true,1);   /* Only used for testing Fixed PGA command  */
     NNO_SetScanNumRepeats(numRepeats);
-    std::cout << "Scan in progress.Estimated Scan time is approximately "
-              << (float) NNO_GetEstimatedScanTime() / 1000.0 << " seconds. ";
 
-    scanTimeOut = NNO_GetEstimatedScanTime() * 3;
+    int estimated = NNO_GetEstimatedScanTime();
+
+    // Fail fast if the scan subsystem isn't ready.  DLPC validation is
+    // now done in the constructor (wake-up loop), so a bogus estimate
+    // here means the device entered a bad state between init and scan.
+    // We do NOT attempt DLPC toggling here ！ that has been shown to
+    // corrupt USB communication on a fragile post-hibernate device.
+    if (estimated <= 0 || estimated > 30000) {
+        std::cout << "ERROR: Bogus estimated scan time " << estimated
+                  << "ms ！ scan subsystem not ready" << std::endl;
+        return FAIL;
+    }
+
+    std::cout << "Scan in progress. Estimated Scan time is approximately "
+              << (float) estimated / 1000.0 << " seconds. ";
+
+    scanTimeOut = estimated * 3;
+    if (scanTimeOut > 30) scanTimeOut = 30;  // hard cap at 30 seconds
     timeScanStart = time(0);
 
-    NNO_PerformScan(storeInSD);
-    //Wait for scan completion
-    if (NNO_ReadDeviceStatus(&devStatus) == PASS) {
-        do {
-            if ((devStatus & NNO_STATUS_SCAN_IN_PROGRESS) != NNO_STATUS_SCAN_IN_PROGRESS) {
-                break;
-            }
-            timeScanEnd = time(0);
-            if ((timeScanEnd - timeScanStart) >= scanTimeOut) {
-                *pBytesRead = 0;
-                std::cout << "Scan time out with " << timeScanEnd - timeScanStart << std::endl;
+    // Retry loop: if the device returns garbage data (can happen after
+    // hibernate wake), reset errors and try once more.
+    const int MAX_SCAN_ATTEMPTS = 2;
+    for (int attempt = 0; attempt < MAX_SCAN_ATTEMPTS; attempt++) {
+        if (attempt > 0) {
+            std::cout << "Retrying scan (attempt " << (attempt + 1) << ")... ";
+            NNO_ResetErrorStatus();
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            timeScanStart = time(0);
+        }
+
+        NNO_PerformScan(storeInSD);
+        //Wait for scan completion
+        if (NNO_ReadDeviceStatus(&devStatus) == PASS) {
+            do {
+                if ((devStatus & NNO_STATUS_SCAN_IN_PROGRESS) != NNO_STATUS_SCAN_IN_PROGRESS) {
+                    break;
+                }
+                timeScanEnd = time(0);
+                if ((timeScanEnd - timeScanStart) >= scanTimeOut) {
+                    *pBytesRead = 0;
+                    std::cout << "Scan time out with " << timeScanEnd - timeScanStart << std::endl;
+                    return FAIL;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+            } while (NNO_ReadDeviceStatus(&devStatus) == PASS);
+        } else {
+            std::cout << "Reading device status for scan completion failed." << std::endl;
+            if (attempt < MAX_SCAN_ATTEMPTS - 1) continue;
+            return FAIL;
+        }
+
+        timeScanEnd = time(0);
+        lastScanTimeMS = timeScanEnd - timeScanStart;
+        std::cout << "Scan time was " << lastScanTimeMS << "ms" << std::endl;
+
+        *pBytesRead = NNO_GetFileSizeToRead(NNO_FILE_SCAN_DATA);
+
+        if (*pBytesRead <= 0 || *pBytesRead > SCAN_DATA_BLOB_SIZE) {
+            std::cout << "WARNING: Bogus scan data size " << *pBytesRead
+                      << " (expected ~" << SCAN_DATA_BLOB_SIZE << ")"
+                      << std::endl;
+            if (attempt < MAX_SCAN_ATTEMPTS - 1) continue;
+            *pBytesRead = 0;
+            return FAIL;
+        }
+
+        if ((size = NNO_GetFile((unsigned char *) pData, *pBytesRead)) != *pBytesRead) {
+            *pBytesRead = size;
+            std::cout << "Scan data read from device failed" << std::endl;
+            if (attempt < MAX_SCAN_ATTEMPTS - 1) continue;
+            return FAIL;
+        }
+
+        // Post-scan diagnostics: verify the device didn't report scan errors.
+        // NNO_PerformScan() does not clear previous scan data, so a silent
+        // scan failure would cause NNO_GetFile() to return stale data.
+        {
+            NNO_error_status_struct errStatus;
+            if (NNO_ReadErrorStatus(&errStatus) == PASS
+                && (errStatus.status & NNO_ERROR_SCAN)) {
+                std::cout << "WARNING: Device reports scan error status=0x"
+                          << std::hex << errStatus.status << std::dec
+                          << " ！ data may be stale";
+                if (errStatus.errorCodes.scan == NNO_ERROR_SCAN_DLPC150_BOOT_ERROR)
+                    std::cout << " (DLPC150 boot error)";
+                else if (errStatus.errorCodes.scan == NNO_ERROR_SCAN_DLPC150_INIT_ERROR)
+                    std::cout << " (DLPC150 init error)";
+                std::cout << std::endl;
+                if (attempt < MAX_SCAN_ATTEMPTS - 1) continue;
                 return FAIL;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
 
-        } while (NNO_ReadDeviceStatus(&devStatus) == PASS);
-    } else {
-        std::cout << "Reading device status for scan completion failed." << std::endl;
-        return FAIL;
+        return PASS;
     }
 
-    timeScanEnd = time(0);
-    lastScanTimeMS = timeScanEnd - timeScanStart;
-    std::cout << "Scan time was " << lastScanTimeMS << "ms" << std::endl;
-
-    *pBytesRead = NNO_GetFileSizeToRead(NNO_FILE_SCAN_DATA);
-
-    if ((size = NNO_GetFile((unsigned char *) pData, *pBytesRead)) != *pBytesRead) {
-        *pBytesRead = size;
-        std::cout << "Scan data read from device failed" << std::endl;
-        return FAIL;
-    }
-
-    return PASS;
+    return FAIL;
 }
 
 
@@ -508,6 +625,9 @@ void NIRScanner::scan(bool saveDataFlag, int numRepeats)
         std::cout << "ERROR: Out of memory" << std::endl;
         return;
     }
+    // Zero the buffer so that if the device returns partial or stale data,
+    // uninitialized bytes don't confuse the TPL deserializer.
+    memset(pData, 0, SCAN_DATA_BLOB_SIZE);
 
     // Scanning.
     scanStatus = this->_performScanReadData(NNO_DONT_STORE_SCAN_IN_SD, numRepeats, pData, &fileSize);
@@ -517,6 +637,11 @@ void NIRScanner::scan(bool saveDataFlag, int numRepeats)
 
     // Display versions.
     std::cout << "Header version: " << ((scanData *) pData)->header_version << std::endl;
+
+    // Zero out previous results so that if interpretation fails,
+    // getScanData() returns empty data (detectable by Python) instead of
+    // leaking stale results from a prior successful scan.
+    this->mScanResults = scanResults{};
 
     int retVal = this->_interpretData(pData);
     if (retVal != PASS) {

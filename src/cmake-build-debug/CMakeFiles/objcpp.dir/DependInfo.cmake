@@ -1,25 +1,26 @@
+
+# Consider dependencies only in project.
+set(CMAKE_DEPENDS_IN_PROJECT_ONLY OFF)
+
 # The set of languages for which implicit dependencies are needed:
 set(CMAKE_DEPENDS_LANGUAGES
-  "CXX"
-  )
-# The set of files for implicit dependencies of each language:
-set(CMAKE_DEPENDS_CHECK_CXX
-  "/home/akg/Documents/share/python/NIRScanner-Python/src/API.cpp" "/home/akg/Documents/share/python/NIRScanner-Python/src/cmake-build-debug/CMakeFiles/objcpp.dir/API.cpp.o"
-  "/home/akg/Documents/share/python/NIRScanner-Python/src/NIRScanner.cpp" "/home/akg/Documents/share/python/NIRScanner-Python/src/cmake-build-debug/CMakeFiles/objcpp.dir/NIRScanner.cpp.o"
-  "/home/akg/Documents/share/python/NIRScanner-Python/src/evm.cpp" "/home/akg/Documents/share/python/NIRScanner-Python/src/cmake-build-debug/CMakeFiles/objcpp.dir/evm.cpp.o"
-  "/home/akg/Documents/share/python/NIRScanner-Python/src/main.cpp" "/home/akg/Documents/share/python/NIRScanner-Python/src/cmake-build-debug/CMakeFiles/objcpp.dir/main.cpp.o"
-  "/home/akg/Documents/share/python/NIRScanner-Python/src/usb.cpp" "/home/akg/Documents/share/python/NIRScanner-Python/src/cmake-build-debug/CMakeFiles/objcpp.dir/usb.cpp.o"
-  )
-set(CMAKE_CXX_COMPILER_ID "GNU")
-
-# The include file search paths:
-set(CMAKE_CXX_TARGET_INCLUDE_PATH
-  "../."
   )
 
-# Targets to which this target links.
-set(CMAKE_TARGET_LINKED_INFO_FILES
-  "/home/akg/Documents/share/python/NIRScanner-Python/src/cmake-build-debug/CMakeFiles/objc.dir/DependInfo.cmake"
+# The set of dependency files which are needed:
+set(CMAKE_DEPENDS_DEPENDENCY_FILES
+  "/home/master/NIRScanner-Python/src/API.cpp" "CMakeFiles/objcpp.dir/API.cpp.o" "gcc" "CMakeFiles/objcpp.dir/API.cpp.o.d"
+  "/home/master/NIRScanner-Python/src/NIRScanner.cpp" "CMakeFiles/objcpp.dir/NIRScanner.cpp.o" "gcc" "CMakeFiles/objcpp.dir/NIRScanner.cpp.o.d"
+  "/home/master/NIRScanner-Python/src/evm.cpp" "CMakeFiles/objcpp.dir/evm.cpp.o" "gcc" "CMakeFiles/objcpp.dir/evm.cpp.o.d"
+  "/home/master/NIRScanner-Python/src/main.cpp" "CMakeFiles/objcpp.dir/main.cpp.o" "gcc" "CMakeFiles/objcpp.dir/main.cpp.o.d"
+  "/home/master/NIRScanner-Python/src/usb.cpp" "CMakeFiles/objcpp.dir/usb.cpp.o" "gcc" "CMakeFiles/objcpp.dir/usb.cpp.o.d"
+  )
+
+# Targets to which this target links which contain Fortran sources.
+set(CMAKE_Fortran_TARGET_LINKED_INFO_FILES
+  )
+
+# Targets to which this target links which contain Fortran sources.
+set(CMAKE_Fortran_TARGET_FORWARD_LINKED_INFO_FILES
   )
 
 # Fortran module output directory.

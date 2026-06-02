@@ -41,6 +41,22 @@ class NIRS:
     def scan(self, num_repeats=1):
         NIRScanner_scan(self.nirs_obj, False, num_repeats)
 
+    @staticmethod
+    def _safe_int(val, default=0):
+        """Convert string to int, returning default on empty or invalid input."""
+        try:
+            return int(val)
+        except (ValueError, TypeError):
+            return default
+
+    @staticmethod
+    def _safe_float(val, default=0.0):
+        """Convert string to float, returning default on empty or invalid input."""
+        try:
+            return float(val)
+        except (ValueError, TypeError):
+            return default
+
     def get_scan_results(self):
         results_dict = {}
         results_str = NIRScanner_getScanData(self.nirs_obj)
@@ -52,29 +68,86 @@ class NIRS:
             if len(keyvalue) == 2:
                 results_dict[keyvalue[0]] = keyvalue[1]
 
-        # Type conversion.
+        # Type conversion - all guarded against empty/malformed C++ output.
         if "valid_length" in results_dict:
-            length = int(results_dict["valid_length"])
+            length = self._safe_int(results_dict.get("valid_length", "0"))
             results_dict["valid_length"] = length
 
-            # Convert numerical results.
+            # Convert numerical results (filter empty strings from split).
             if "wavelength" in results_dict:
-                results_dict["wavelength"] = [float(item) for item in results_dict["wavelength"].split(",")[:length]]
+                results_dict["wavelength"] = [
+                    self._safe_float(item) for item in results_dict["wavelength"].split(",")[:length]
+                    if item.strip()
+                ]
             if "intensity" in results_dict:
-                results_dict["intensity"] = [int(item) for item in results_dict["intensity"].split(",")[:length]]
+                results_dict["intensity"] = [
+                    self._safe_int(item) for item in results_dict["intensity"].split(",")[:length]
+                    if item.strip()
+                ]
             if "reference" in results_dict:
-                results_dict["reference"] = [int(item) for item in results_dict["reference"].split(",")[:length]]
+                results_dict["reference"] = [
+                    self._safe_int(item) for item in results_dict["reference"].split(",")[:length]
+                    if item.strip()
+                ]
 
         if "temperature_system" in results_dict:
-            results_dict["temperature_system"] = int(results_dict["temperature_system"]) / 100.0
+            results_dict["temperature_system"] = self._safe_int(results_dict["temperature_system"]) / 100.0
         if "temperature_detector" in results_dict:
-            results_dict["temperature_detector"] = int(results_dict["temperature_detector"]) / 100.0
+            results_dict["temperature_detector"] = self._safe_int(results_dict["temperature_detector"]) / 100.0
         if "humidity" in results_dict:
-            results_dict["humidity"] = int(results_dict["humidity"]) / 100.0
+            results_dict["humidity"] = self._safe_int(results_dict["humidity"]) / 100.0
         if "pga" in results_dict:
-            results_dict["pga"] = int(results_dict["pga"])
+            results_dict["pga"] = self._safe_int(results_dict["pga"])
 
         return results_dict
+
+    def scan_collect(self, num_repeats=1, max_retries=1):
+        """Scan and collect results with data validation.
+
+        Returns (success: bool, results: dict).
+        On failure, clears error status and retries up to max_retries times.
+        """
+        for attempt in range(max_retries + 1):
+            self.scan(num_repeats)
+            results = self.get_scan_results()
+
+            intensities = results.get("intensity", [])
+            wavelengths = results.get("wavelength", [])
+            header = results.get("header_version", "0")
+
+            # Validate: must have real data
+            if intensities and wavelengths and len(intensities) > 0:
+                # Check for garbage header version (valid headers < 0x100000)
+                hv = self._safe_int(header, 0)
+                if hv > 0x100000:
+                    print(f"[NIRS] WARNING: Suspicious header version {hv} (0x{hv:X}), "
+                          f"attempt {attempt+1}/{max_retries+1}")
+                    if attempt < max_retries:
+                        self.clear_error_status()
+                        continue
+                    # Last attempt - accept data despite bad header
+
+                # Check for all-zero intensities: indicates _interpretData()
+                # failed at the C++ level and mScanResults was zeroed (or
+                # retained stale zeros). A real spectrum always has non-zero
+                # intensity values.
+                if all(v == 0 for v in intensities):
+                    print(f"[NIRS] WARNING: All intensities are zero - "
+                          f"interpretation likely failed "
+                          f"(attempt {attempt+1}/{max_retries+1})")
+                    if attempt < max_retries:
+                        self.clear_error_status()
+                        continue
+
+                return True, results
+
+            # No valid data
+            print(f"[NIRS] WARNING: Scan returned no valid data "
+                  f"(attempt {attempt+1}/{max_retries+1})")
+            if attempt < max_retries:
+                self.clear_error_status()
+
+        return False, results
 
     def display_version(self):
         return NIRScanner_readVersion(self.nirs_obj)
@@ -95,6 +168,21 @@ class NIRS:
     
     def clear_error_status(self):
         return NIRScanner_resetErrorStatus(self.nirs_obj)
+
+    def close(self):
+        """Explicitly release the C++ device object, calling the destructor
+        (which closes the USB HID handle via USB_Close). De-registers from
+        atexit to prevent double-free on process exit."""
+        if getattr(self, 'nirs_obj', None) is not None:
+            try:
+                delete_NIRScanner(self.nirs_obj)
+            except Exception:
+                pass
+            self.nirs_obj = None
+        try:
+            atexit.unregister(self._cleanup)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

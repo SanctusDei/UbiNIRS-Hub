@@ -19,7 +19,7 @@ g++ -fpic -c $DIR/../*.cpp
 g++ -fpic -c $DIR/../*.cxx -I/usr/include/python${PYTHON3_VERSION}
 mv ./*.o $DIR/../build
 # g++ -o ../build/main ../build/*.o -ludev
-g++ -shared $DIR/../build/*.o -ludev -lpython${PYTHON3_VERSION}m -o $DIR/../build/_NIRScanner.so.3
+g++ -shared $DIR/../build/*.o -ludev -lpython${PYTHON3_VERSION} -o $DIR/../build/_NIRScanner.so.3
 cp $DIR/../build/_NIRScanner.so.3 $DIR/../../lib/
 cp $DIR/../../lib/_NIRScanner.so.3 $DIR/../../_NIRScanner.so
 
