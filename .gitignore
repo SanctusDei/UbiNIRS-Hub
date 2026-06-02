@@ -1,2 +1,40 @@
+# Bytecode
+*.pyc
+__pycache__/
+
+# Compiled extensions
+*.so
+*.so.*
+
+# Object / static libs
 *.o
-__pycache__
+*.a
+*.lo
+*.la
+
+# macOS
+*.dylib
+
+# Windows
+*.dll
+*.exe
+
+# Binary data (Hadamard matrices — generated at build time)
+*.bin
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build directories
+build/
+cmake-build-debug/
+autom4te.cache/
+.deps/
+.libs/
+
+# IDE
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
