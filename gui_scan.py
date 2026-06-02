@@ -304,7 +304,7 @@ class ScanWorkflowMixin:
                     continue
 
                 if task_type == "Classification":
-                    if hierarchical and hierarchical.get("clf2") is not None:
+                    if hierarchical and (hierarchical.get("clf2") is not None or hierarchical.get("clf3") is not None):
                         self._hier_level_map = hierarchical
                         pred = self._hierarchical_predict(X_filtered)
                     else:

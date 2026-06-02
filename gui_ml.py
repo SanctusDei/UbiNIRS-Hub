@@ -338,17 +338,35 @@ class MLEngineMixin:
                 X_low = X[low_idx]
                 clf2 = base_cls.__class__(**base_cls.get_params()) if hasattr(base_cls, 'get_params') else base_cls.__class__()
                 clf2.fit(X_low, y_low)
+
+        # ── Train HIGH classifier (mirror of LOW branch) ────────────
+        high_idx = np.where(y_level1 == "HIGH")[0]
+        if len(high_idx) < 2:
+            clf3 = None
+            high_labels = None
+        else:
+            y_high = y[high_idx]
+            high_labels = np.unique(y_high)
+            if len(high_labels) < 2:
+                clf3 = None
+            else:
+                X_high = X[high_idx]
+                clf3 = base_cls.__class__(**base_cls.get_params()) if hasattr(base_cls, 'get_params') else base_cls.__class__()
+                clf3.fit(X_high, y_high)
+
         self._hier_level_map = {
-            "clf1": clf1, "clf2": clf2,
+            "clf1": clf1, "clf2": clf2, "clf3": clf3,
             "median_mean": median_mean,
-            "low_labels": low_labels
+            "low_labels": low_labels,
+            "high_labels": high_labels,
         }
-        return clf1, clf2
+        return clf1, clf2, clf3
 
     def _hierarchical_predict(self, X):
         mm = self._hier_level_map
         clf1 = mm["clf1"]
-        clf2 = mm["clf2"]
+        clf2 = mm.get("clf2")
+        clf3 = mm.get("clf3")
         means = np.mean(X, axis=1)
         if clf1 is not None:
             level_pred = clf1.predict(X)
@@ -357,24 +375,29 @@ class MLEngineMixin:
         results = np.empty(len(X), dtype=object)
         high_mask = level_pred == "HIGH"
         low_mask = level_pred == "LOW"
+
+        # ── HIGH branch: classify using clf3 ──────────────────────────
         if np.any(high_mask):
-            X_high = X[high_mask]
-            means_high = means[high_mask]
-            high_classes = []
-            for i in range(len(X_high)):
-                dist_to_high = abs(means_high[i] - mm["median_mean"])
-                if clf2 is not None and mm["low_labels"] is not None:
-                    high_classes.append(mm["low_labels"][0])
-                else:
-                    high_classes.append("UNKNOWN")
-            results[high_mask] = high_classes
-        if np.any(low_mask) and clf2 is not None and mm["low_labels"] is not None and len(mm["low_labels"]) >= 2:
-            results[low_mask] = clf2.predict(X[low_mask])
-        elif np.any(low_mask):
-            if clf2 is not None and mm["low_labels"] is not None:
-                results[low_mask] = mm["low_labels"][0]
+            high_labels = mm.get("high_labels")
+            if clf3 is not None and high_labels is not None and len(high_labels) >= 2:
+                results[high_mask] = clf3.predict(X[high_mask])
+            elif high_labels is not None and len(high_labels) == 1:
+                # Single high class — assign it directly (correct, unlike old bug)
+                results[high_mask] = high_labels[0]
+            else:
+                results[high_mask] = "UNKNOWN"
+
+        # ── LOW branch: classify using clf2 ──────────────────────────
+        if np.any(low_mask):
+            low_labels = mm.get("low_labels")
+            if clf2 is not None and low_labels is not None and len(low_labels) >= 2:
+                results[low_mask] = clf2.predict(X[low_mask])
+            elif low_labels is not None and len(low_labels) == 1:
+                # Single low class — assign it directly
+                results[low_mask] = low_labels[0]
             else:
                 results[low_mask] = "UNKNOWN"
+
         return results
 
     # ── Batch preprocessing ──────────────────────────────────────────
@@ -734,13 +757,15 @@ class MLEngineMixin:
                 if task_type == "Classification":
                     try:
                         log("Training hierarchical intensity-split classifier...")
-                        clf1, clf2 = self._hierarchical_train(X_all, y_all, current_model)
-                        if clf1 is not None or clf2 is not None:
+                        clf1, clf2, clf3 = self._hierarchical_train(X_all, y_all, current_model)
+                        if clf1 is not None or clf2 is not None or clf3 is not None:
                             hierarchical_data = {
                                 "clf1": clf1,
                                 "clf2": clf2,
+                                "clf3": clf3,
                                 "median_mean": self._hier_level_map.get("median_mean"),
-                                "low_labels": self._hier_level_map.get("low_labels")
+                                "low_labels": self._hier_level_map.get("low_labels"),
+                                "high_labels": self._hier_level_map.get("high_labels"),
                             }
                             log(f"[HIERARCHICAL] Two-level split trained successfully (median intensity = {hierarchical_data['median_mean']:.4f})")
                         else:
