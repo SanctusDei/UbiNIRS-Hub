@@ -1,140 +1,288 @@
-# NIRScanner-Python
-This is an unofficial Python library for NIRScanner Nano produced by Texas Instruments.
+# UbiNIRS-Hub — NIRScanner Python Terminal
 
-# Prerequisite
-- Operating System
-  - Only tested on Linux (Ubuntu & Noobs for Pi)
-  - Tested with virtual machine (VMWare Workstation Player)
-- Dependencies
-  - Python 2.7 or Python 3.5 above 
-  - Development packages for libudev, libusb. Debian/Ubuntu systems can run:
-    ```bash
-    sudo apt-get install libudev-dev libusb-1.0-0-dev python-dev python3-dev
-    ```
+A full-featured touchscreen GUI application for the **TI DLP NIRScan Nano**
+near-infrared spectrometer. Built for Raspberry Pi with a 5-inch DSI display,
+it combines hardware control, spectral visualization, and on-device machine
+learning for real-time material classification and regression.
 
-# Implemented features
-- Perform a scan.
-- Get scanning result.
-- Config the scanning pattern.
-- Set PGA gain.
-- Reset error status.
-- Set hibernation mode.
-- Keep the lamp on / off. 
+<p align="center">
+  <i>Probing Sucrose Contents in Everyday Drinks Using Miniaturized Near-Infrared Spectroscopy Scanners</i><br>
+  <a href="https://doi.org/10.1145/3369834">ACM IMWUT 2020</a> &nbsp;|&nbsp;
+  <a href="https://doi.org/10.1145/3533426">ACM TOG 2022</a>
+</p>
 
-If you need / implemented a new feature, you may send me an email / pull request.
+---
 
-# Quick Start
-## Compile
-Already compiled for Debian/Ubuntu systems.
-```console
-$ cd NIRScanner-Python
+## Features
+
+### 🔬 Spectral Scanning
+- **Hadamard & Column** scan modes with configurable wavelength range (900–1700 nm)
+- Real-time **intensity / absorbance / reflectance** graph display
+- PGA gain, lamp on/off, and hibernation control
+- SNR (Signal-to-Noise Ratio) diagnostic scans
+- Auto-save spectra as timestamped CSV files
+
+### 🤖 On-Device Machine Learning
+- **Classification**: SVM, Random Forest, KNN, LDA
+- **Regression**: SVR, PLS
+- **Hierarchical classification** with per-branch confidence estimation
+- Spectral preprocessing: SNV, MSC, Savitzky-Golay smoothing, absorbance transform
+- **StandardScaler** pipeline persistence for KNN/SVM/LDA/SVR
+- **Stratified memory management** — rolling window of historical samples per class
+- Confidence thresholding with **UNKNOWN** rejection
+- Leave-One-Out cross-validation
+
+### 📋 Task Management
+- SQLite-backed task CRUD with **card-based touch browser**
+- Classification & regression task types
+- Tag-based organization
+- Model export/import (joblib `.pkl`)
+- Batch prediction with majority voting
+
+### 🔋 System
+- **INA219** battery coulomb counter with capacity estimation
+- System IP display with async refresh
+- Hardware heartbeat watchdog with automatic reconnection
+- **Dead sensor detection** — rejects scans with constant/flat intensity
+- Auto-start deployment via `setup_autostart.sh`
+
+---
+
+## Hardware Requirements
+
+| Component | Notes |
+|-----------|-------|
+| **TI DLP NIRScan Nano** | USB HID interface |
+| **Raspberry Pi 4/5** | Tested on ARM aarch64 (Raspberry Pi OS) |
+| **5-inch DSI Touchscreen** | 800×480 resolution, fullscreen UI |
+| **INA219 Current Sensor** (optional) | I²C addr 0x42 for battery monitoring |
+| **2S LiPo Battery** (optional) | ~1800 mAh rated capacity |
+
+---
+
+## Software Dependencies
+
+### System
+
+```bash
+sudo apt-get install libudev-dev libusb-1.0-0-dev
 ```
-For compiling Python 2 library:
-```console
-NIRScanner-Python$ ./src/scripts/compile_py2.sh
-```
-For compiling Python 3 library:
-```console
-NIRScanner-Python$ ./src/scripts/compile_py3.sh
-```
-## Deploy
-You need **_NIRScanner.so** and **NIRS.py** to be in your project path, where **_NIRScanner.so** is the compiled Python libray, and **NIRS.py** is the Python Class wrapper.
-### Python 2
-Use _NIRScanner.so.**2**
-```console
-NIRScanner-Python$ cp ./lib/_NIRScanner.so.2 <your-project-path>/_NIRScanner.so
-NIRScanner-Python$ cp ./lib/NIRS.py <your-project-path>
-```
+
 ### Python 3
-Use _NIRScanner.so.**3**
-```console
-NIRScanner-Python$ cp ./lib/_NIRScanner.so.3 <your-project-path>/_NIRScanner.so
-NIRScanner-Python$ cp ./lib/NIRS.py <your-project-path>
-```
-
-### Raspberry Pi with Python 2
-Use _NIRScanner.so.**2.pi**
-```console
-NIRScanner-Python$ cp ./lib/_NIRScanner.so.2.pi <your-project-path>/_NIRScanner.so
-NIRScanner-Python$ cp ./lib/NIRS.py <your-project-path>
-```
-
-## Run
-You need root (sudo) permission. Otherwise you may need a workaround such as in [1].
-```python
-from NIRS import NIRS
-nirs = NIRS()
-results = nirs.scan()
-```
-Note if you are using virtual environment or Anaconda, make sure you are using the absolute python path for sudo. 
-```console
-$ which python
-/your/path/to/python
-$ sudo /your/path/to/python your_python_code.py
-```
-For jupyter
-```console
-$ which jupyter 
-/your/path/to/jupyter
-$ sudo /your/path/to/jupyter lab 
-```
-
-That's it.
-
-For more features / examples please refer to _test.ipynb_ (jupyter notebook, also don't forget sudo) and _NIRS.py_.
-
-[1] https://stackoverflow.com/questions/3738173/why-does-pyusb-libusb-require-root-sudo-permissions-on-linux
-
-# Citations
-If you find this repository useful, I would appreciate it if you can cite our papers below:
 
 ```
+numpy>=1.24
+scipy>=1.10
+pandas>=2.0
+scikit-learn>=1.3
+joblib>=1.3
+tkinter        # included with Python on most systems
+```
+
+Install with:
+
+```bash
+pip install numpy scipy pandas scikit-learn joblib
+```
+
+> **Note**: The NIRScan Nano requires **root/sudo** for USB HID access.
+> See [pyusb/libusb permissions](https://stackoverflow.com/questions/3738173/why-does-pyusb-libusb-require-root-sudo-permissions-on-linux).
+
+---
+
+## Quick Start
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/SanctusDei/UbiNIRS-Hub.git
+cd UbiNIRS-Hub
+```
+
+### 2. Compile the Native Library (Raspberry Pi only)
+
+If `_NIRScanner.so` is not present or you need to rebuild:
+
+```bash
+chmod +x rebuild_so.sh
+./rebuild_so.sh
+```
+
+This recompiles the C++ sources under `src/`, regenerates the SWIG wrapper,
+and links the final `_NIRScanner.so` shared object.
+
+### 3. Launch the GUI
+
+```bash
+sudo python3 main.py
+# or directly:
+sudo python3 gui_app.py
+```
+
+### 4. Auto-Start on Boot
+
+```bash
+chmod +x setup_autostart.sh
+./setup_autostart.sh
+```
+
+This configures a systemd `.desktop` autostart entry and passwordless sudo
+for the NIRScanner GUI — the app launches automatically on reboot.
+
+---
+
+## Project Structure
+
+```
+UbiNIRS-Hub/
+├── main.py                  # Entry point (lightweight launcher)
+├── gui_app.py               # Main GUI application (SpectrometerApp)
+├── gui_scan.py              # Scan workflow mixin (hardware + graph)
+├── gui_ml.py                # ML engine mixin (training + inference)
+├── gui_tasks.py             # Task management mixin (CRUD + UI)
+├── NIRS.py                  # Python wrapper for _NIRScanner.so
+├── INA219.py                # INA219 battery sensor driver
+├── setup_autostart.sh       # Raspberry Pi auto-start deployment
+├── rebuild_so.sh            # Recompile _NIRScanner.so from C++ source
+├── spectral_tasks.db        # SQLite task database (auto-created)
+│
+├── src/                     # C++ source (SWIG wrapper + DLP spectrum lib)
+│   ├── NIRScanner.i         # SWIG interface file
+│   ├── NIRScanner.cpp/h     # Python-C++ bridge
+│   ├── API.cpp/h            # High-level scan API
+│   ├── dlpspec_*.c/h        # DLP Spectrum Library (TI)
+│   ├── hid.c/hidapi.h       # USB HID transport
+│   ├── tpl.c/h              # TivaWare Peripheral Library
+│   └── scripts/             # Compile scripts for py2/py3
+│
+├── models/                  # Trained ML model pickles
+├── dash/                    # Dataset CSVs, cached .npy features, perf logs
+├── data/                    # Additional datasets & spectra exports
+│   └── spectra/             # Timestamped spectrum CSV archives
+│
+└── test_/                   # Test scripts & notebooks
+```
+
+---
+
+## Architecture
+
+The application uses a **Mixin-based** architecture on top of Tkinter:
+
+```
+┌─────────────────────────────────────────────┐
+│              SpectrometerApp                 │
+│  (gui_app.py — main window, HW state)       │
+├─────────────────────────────────────────────┤
+│  ScanWorkflowMixin        (gui_scan.py)     │
+│  MLEngineMixin            (gui_ml.py)       │
+│  TaskManagerMixin         (gui_tasks.py)    │
+├─────────────────────────────────────────────┤
+│  NIRS.py  ←  _NIRScanner.so  ←  C++ driver │
+│  INA219.py (battery sensor)                 │
+│  SQLite (spectral_tasks.db)                 │
+└─────────────────────────────────────────────┘
+```
+
+### Key Design Decisions
+
+- **Hardware heartbeat thread**: Continuously polls the NIRScan device; automatically
+  disables UI controls on disconnect and re-enables on reconnect.
+- **Scan generation counter**: Prevents stale scan callbacks from overwriting current
+  results after rapid re-scans.
+- **Stratified sample memory**: Rolling per-class windows keep training datasets
+  balanced without unbounded growth.
+- **Hierarchical classification**: Two-level (HIGH/LOW) split based on raw absorbance
+  mean, with per-branch SVC/RF/KNN classifiers and per-sample confidence scores.
+- **Dead sensor detection**: Rejects scans where peak-to-peak intensity < 1e-6
+  (constant signal across all wavelengths).
+
+---
+
+## Usage
+
+### Scanning
+
+1. Tap **SCAN** to open the scan page
+2. Press the large **SCAN** button to acquire a spectrum
+3. Use **INT / ABS / REF** buttons to switch graph modes
+4. Scans auto-save to `data/spectra/` as CSV
+
+### Training a Model
+
+1. Create a task in **TASKS** → **+ NEW**
+2. Choose **Classification** or **Regression**
+3. Select an algorithm (SVM, Random Forest, KNN, LDA, SVR, PLS)
+4. Scan reference samples and assign labels via the training UI
+5. Tap **TRAIN** — performance metrics display automatically
+6. The model is saved to `models/` and available for prediction
+
+### Running Predictions
+
+1. From the **TASKS** page, select a trained task
+2. Tap **PREDICT** mode
+3. Scan an unknown sample
+4. The predicted class/value appears with confidence score
+5. Low-confidence predictions are rejected as **UNKNOWN**
+
+### Battery Monitoring
+
+When an INA219 sensor is connected, the status bar shows:
+- Instantaneous voltage & current
+- Cumulative mAh consumed (coulomb counting)
+- Estimated remaining capacity
+
+---
+
+## Citation
+
+If you use this software in your research, please cite:
+
+```bibtex
 @article{jiang2020probing,
-author = {Jiang, Weiwei and Marini, Gabriele and van Berkel, Niels and Sarsenbayeva, Zhanna and Tan, Zheyu and Luo, Chu and He, Xin and Dingler, Tilman and Goncalves, Jorge and Kawahara, Yoshihiro and Kostakos, Vassilis},
-title = {Probing Sucrose Contents in Everyday Drinks Using Miniaturized Near-Infrared Spectroscopy Scanners},
-year = {2020},
-issue_date = {December 2019},
-publisher = {Association for Computing Machinery},
-address = {New York, NY, USA},
-volume = {3},
-number = {4},
-url = {https://doi.org/10.1145/3369834},
-doi = {10.1145/3369834},
-journal = {Proc. ACM Interact. Mob. Wearable Ubiquitous Technol.},
-month = sep,
-articleno = {136},
-numpages = {25},
-keywords = {Near-Infrared spectroscopy, food scanner, liquid sensing, machine learning, mobile sensing}
+  author = {Jiang, Weiwei and Marini, Gabriele and van Berkel, Niels
+            and Sarsenbayeva, Zhanna and Tan, Zheyu and Luo, Chu and
+            He, Xin and Dingler, Tilman and Goncalves, Jorge and
+            Kawahara, Yoshihiro and Kostakos, Vassilis},
+  title = {Probing Sucrose Contents in Everyday Drinks Using
+           Miniaturized Near-Infrared Spectroscopy Scanners},
+  journal = {Proc. ACM Interact. Mob. Wearable Ubiquitous Technol.},
+  volume = {3},
+  number = {4},
+  year = {2020},
+  doi = {10.1145/3369834}
 }
 
 @article{jiang2022near,
-author = {Jiang, Weiwei and Yu, Difeng and Wang, Chaofan and Sarsenbayeva, Zhanna and van Berkel, Niels and Goncalves, Jorge and Kostakos, Vassilis},
-title = {Near-infrared Imaging for Information Embedding and Extraction with Layered Structures},
-year = {2022},
-issue_date = {February 2023},
-publisher = {Association for Computing Machinery},
-address = {New York, NY, USA},
-volume = {42},
-number = {1},
-issn = {0730-0301},
-url = {https://doi.org/10.1145/3533426},
-doi = {10.1145/3533426},
-journal = {ACM Trans. Graph.},
-month = aug,
-articleno = {4},
-numpages = {26},
-keywords = {Near-infrared spectroscopy, information embedding, information extraction, non-invasive inspection}
+  author = {Jiang, Weiwei and Yu, Difeng and Wang, Chaofan and
+            Sarsenbayeva, Zhanna and van Berkel, Niels and
+            Goncalves, Jorge and Kostakos, Vassilis},
+  title = {Near-infrared Imaging for Information Embedding and
+           Extraction with Layered Structures},
+  journal = {ACM Trans. Graph.},
+  volume = {42},
+  number = {1},
+  year = {2022},
+  doi = {10.1145/3533426}
 }
 ```
 
-# Related repositories
-- NIRScanner-Imaging: https://github.com/HighTemplar-wjiang/NIRScanner-Imaging 
+---
 
-    _A no-reference wavelength selection algorithm for near-infrared imaging._
+## Related Repositories
 
-- NIRScanner-Plotter: https://github.com/HighTemplar-wjiang/NIRScanner-Plotter
+- [NIRScanner-Imaging](https://github.com/HighTemplar-wjiang/NIRScanner-Imaging) — No-reference wavelength selection algorithm for near-infrared imaging
+- [NIRScanner-Plotter](https://github.com/HighTemplar-wjiang/NIRScanner-Plotter) — Django server controlling NIRScan Nano + 2D plotter
 
-    _A Python Django based server to control a NIRScan Nano and a 2D plotter._
+---
 
-# License
-This repository uses source codes from DLP NIRscan Nano GUI and DLP Spectrum Library, I didn't find any lisence within those repositories, please email me if there is.
+## License
+
+This repository incorporates source code from the DLP NIRscan Nano GUI and
+DLP Spectrum Library (Texas Instruments). Please refer to the original
+distributions for their license terms.
+
+## Contributors
+
+- **Weiwei Jiang** — original Python wrapper & GUI
+- **SanctusDei** — ML pipeline, hierarchical classifier, StandardScaler, dead sensor detection, task management, battery monitoring, auto-start deployment
