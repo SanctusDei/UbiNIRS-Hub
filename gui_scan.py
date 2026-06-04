@@ -280,6 +280,17 @@ class ScanWorkflowMixin:
             self.predict_result_var.set("ERROR:\nNO BATCH DATA")
             return
 
+        # Dead sensor check on batch intensities
+        batch_intensities = getattr(self, '_batch_intensities', [])
+        dead_count = 0
+        for intensities in batch_intensities:
+            if intensities and np.ptp(intensities) < 1e-6:
+                dead_count += 1
+        if dead_count > 0 and dead_count == len(batch_intensities):
+            self.predict_result_var.set("ERROR:\nDEAD SENSOR\n(all scans constant)")
+            self.predict_detail_var.set("All batch scans have identical intensity values")
+            return
+
         try:
             task = self.tasks[self.current_task_idx]
             algorithm = task.get("algorithm", "")
@@ -289,9 +300,11 @@ class ScanWorkflowMixin:
             if isinstance(loaded_obj, dict) and "classifier" in loaded_obj:
                 model = loaded_obj["classifier"]
                 hierarchical = loaded_obj.get("hierarchical")
+                scaler = loaded_obj.get("preprocessor_scaler")
             else:
                 model = loaded_obj
                 hierarchical = None
+                scaler = None
 
             task_type = task.get("task_type", "Classification")
             all_predictions = []
@@ -302,15 +315,22 @@ class ScanWorkflowMixin:
                     np.array(abs_data), algorithm)
                 if X_filtered is None:
                     continue
+                if scaler is not None:
+                    X_filtered = scaler.transform(X_filtered)
 
                 if task_type == "Classification":
                     if hierarchical and (hierarchical.get("clf2") is not None or hierarchical.get("clf3") is not None):
                         self._hier_level_map = hierarchical
-                        pred = self._hierarchical_predict(X_filtered)
+                        raw_mean = float(np.mean(abs_data))
+                        pred, hier_conf = self._hierarchical_predict(
+                            X_filtered, raw_means=raw_mean)
+                        all_predictions.append(str(pred[0]))
+                        conf = float(hier_conf[0])
+                        source = "hierarchical"
                     else:
                         pred = model.predict(X_filtered)
-                    all_predictions.append(str(pred[0]))
-                    conf, source = self._compute_confidence(model, X_filtered)
+                        all_predictions.append(str(pred[0]))
+                        conf, source = self._compute_confidence(model, X_filtered)
                     all_confidences.append(conf)
                     if not hasattr(self, '_batch_conf_source'):
                         self._batch_conf_source = source
@@ -560,6 +580,12 @@ class ScanWorkflowMixin:
                 if not waves or not intensities:
                     self.predict_result_var.set("ERROR:\nNO SCAN DATA")
                     return
+                # Dead sensor / bad scan rejection
+                if intensities and np.ptp(intensities) < 1e-6:
+                    self.predict_result_var.set("ERROR:\nDEAD SENSOR\n(constant signal)")
+                    self.predict_detail_var.set("All intensity values identical — check sensor")
+                    self.root.after(0, self._finalize_ui, action)
+                    return
 
                 r_raw_list = []
                 for i in range(len(waves)):
@@ -582,29 +608,36 @@ class ScanWorkflowMixin:
                 if isinstance(loaded_obj, dict) and "classifier" in loaded_obj:
                     model = loaded_obj["classifier"]
                     hierarchical = loaded_obj.get("hierarchical")
+                    scaler = loaded_obj.get("preprocessor_scaler")
                 else:
                     model = loaded_obj
                     hierarchical = None
+                    scaler = None
 
                 X_filtered, _ = self._preprocess_spectrum(absorbances, algorithm)
                 if X_filtered is None:
                     self.predict_result_var.set("ERROR:\nPREPROCESS FAILED")
                     return
+                if scaler is not None:
+                    X_filtered = scaler.transform(X_filtered)
 
                 task_type = task.get("task_type", "Classification")
 
                 if task_type == "Classification":
                     # Try hierarchical prediction first when available
-                    is_hier = (hierarchical and hierarchical.get("clf2") is not None)
+                    is_hier = (hierarchical and (hierarchical.get("clf2") is not None or hierarchical.get("clf3") is not None))
                     if is_hier:
                         self._hier_level_map = hierarchical
-                        pred = self._hierarchical_predict(X_filtered)
+                        raw_mean = float(np.mean(absorbances))
+                        pred, hier_conf = self._hierarchical_predict(
+                            X_filtered, raw_means=raw_mean)
                         final_result = str(pred[0])
+                        confidence = float(hier_conf[0])
+                        source = "hierarchical"
                     else:
                         pred = model.predict(X_filtered)
                         final_result = str(pred[0])
-
-                    confidence, source = self._compute_confidence(model, X_filtered)
+                        confidence, source = self._compute_confidence(model, X_filtered)
 
                     # Threshold check: reject low-confidence predictions
                     accepted = confidence >= self.CONFIDENCE_THRESHOLD
@@ -637,6 +670,7 @@ class ScanWorkflowMixin:
                         accepted=accepted, mode="single",
                         hierarchical=is_hier)
                 else:
+                    pred = model.predict(X_filtered)
                     final_val = float(np.squeeze(pred))
                     target_name = meta.get("reg_target", "VALUE").upper()
                     display_text = f"[ ANALYSIS COMPLETE ]\n\n{target_name}:\n{final_val:.3f}"

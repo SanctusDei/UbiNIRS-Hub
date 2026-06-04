@@ -154,6 +154,7 @@ class MLEngineMixin:
 
     # ── Confidence estimation ────────────────────────────────────────
     def _compute_confidence(self, model, X):
+        """Compute aggregate confidence for display (single scalar)."""
         try:
             # SVC: decision_function hyperplane distance + sigmoid
             if isinstance(model, SVC):
@@ -188,6 +189,33 @@ class MLEngineMixin:
             return 0, "--"
         except Exception:
             return 0, "--"
+
+    @staticmethod
+    def _branch_confidence(model, X_subset):
+        """Compute per-sample confidence from a branch classifier.
+
+        Returns a 1-D numpy float array, one value per row of X_subset.
+        Handles SVC (decision_function), RF/KNN (predict_proba), and
+        fallback (predict_proba if available).
+        """
+        n = X_subset.shape[0]
+        try:
+            if isinstance(model, SVC):
+                d = model.decision_function(X_subset)
+                if d.ndim == 1:                     # binary SVC
+                    abs_d = np.abs(d)
+                else:                                # multi-class SVC
+                    abs_d = np.max(np.abs(d), axis=1)
+                return 100.0 / (1.0 + np.exp(-abs_d))
+
+            if hasattr(model, "predict_proba"):
+                probs = model.predict_proba(X_subset)
+                return np.max(probs, axis=1) * 100.0
+
+            # Last resort: no confidence available → 50 %
+            return np.full(n, 50.0)
+        except Exception:
+            return np.full(n, 50.0)
 
     # ── Prediction metrics logging ────────────────────────────────────
     def _log_prediction_metrics(self, task, prediction, confidence, source,
@@ -314,10 +342,26 @@ class MLEngineMixin:
         return X_msc
 
     # ── Hierarchical classification ──────────────────────────────────
-    def _hierarchical_train(self, X, y, base_cls):
-        means = np.mean(X, axis=1)
-        median_mean = np.median(means)
-        y_level1 = np.where(means >= median_mean, "HIGH", "LOW")
+    def _hierarchical_train(self, X, y, base_cls, raw_means=None):
+        """Train two-level hierarchical classifier.
+
+        Parameters
+        ----------
+        X : ndarray (n_samples, n_features)
+            Preprocessed feature matrix (SNV, SG, etc.).
+        y : ndarray (n_samples,)
+            Class labels.
+        base_cls : estimator
+            Prototype classifier for cloning.
+        raw_means : ndarray (n_samples,) or None
+            Per-sample mean of **raw** absorbances (before SNV).
+            When None, falls back to np.mean(X, axis=1) — which is
+            near-zero after SNV and produces a near-random split.
+        """
+        if raw_means is None:
+            raw_means = np.mean(X, axis=1)  # backward compat (SNV-aware)
+        median_mean = np.median(raw_means)
+        y_level1 = np.where(raw_means >= median_mean, "HIGH", "LOW")
         unique_levels = np.unique(y_level1)
         if len(unique_levels) < 2:
             clf1 = None
@@ -362,17 +406,41 @@ class MLEngineMixin:
         }
         return clf1, clf2, clf3
 
-    def _hierarchical_predict(self, X):
+    def _hierarchical_predict(self, X, raw_means=None):
+        """Return (predictions, confidences) from the hierarchical model.
+
+        confidences is a 1-D float array computed from the branch
+        classifier that actually made each prediction (clf2 or clf3),
+        NOT from the flat model.
+
+        Parameters
+        ----------
+        X : ndarray (n_samples, n_features)
+            Preprocessed feature matrix.
+        raw_means : float, ndarray, or None
+            Per-sample mean of **raw** absorbances (before SNV).
+            When None, falls back to np.mean(X, axis=1) — which is
+            near-zero after SNV and produces near-random level assignment.
+        """
         mm = self._hier_level_map
         clf1 = mm["clf1"]
         clf2 = mm.get("clf2")
         clf3 = mm.get("clf3")
-        means = np.mean(X, axis=1)
-        if clf1 is not None:
-            level_pred = clf1.predict(X)
+        if raw_means is not None:
+            raw_means_arr = np.atleast_1d(np.asarray(raw_means, dtype=np.float64))
+            if clf1 is not None:
+                level_pred = clf1.predict(X)
+            else:
+                level_pred = np.where(raw_means_arr >= mm["median_mean"], "HIGH", "LOW")
         else:
-            level_pred = np.where(means >= mm["median_mean"], "HIGH", "LOW")
+            means = np.mean(X, axis=1)
+            if clf1 is not None:
+                level_pred = clf1.predict(X)
+            else:
+                level_pred = np.where(means >= mm["median_mean"], "HIGH", "LOW")
         results = np.empty(len(X), dtype=object)
+        confidences = np.full(len(X), 50.0)  # default fallback
+
         high_mask = level_pred == "HIGH"
         low_mask = level_pred == "LOW"
 
@@ -381,24 +449,30 @@ class MLEngineMixin:
             high_labels = mm.get("high_labels")
             if clf3 is not None and high_labels is not None and len(high_labels) >= 2:
                 results[high_mask] = clf3.predict(X[high_mask])
+                confidences[high_mask] = self._branch_confidence(clf3, X[high_mask])
             elif high_labels is not None and len(high_labels) == 1:
-                # Single high class — assign it directly (correct, unlike old bug)
+                # Single high class — assign it directly
                 results[high_mask] = high_labels[0]
+                confidences[high_mask] = 100.0
             else:
                 results[high_mask] = "UNKNOWN"
+                confidences[high_mask] = 0.0
 
         # ── LOW branch: classify using clf2 ──────────────────────────
         if np.any(low_mask):
             low_labels = mm.get("low_labels")
             if clf2 is not None and low_labels is not None and len(low_labels) >= 2:
                 results[low_mask] = clf2.predict(X[low_mask])
+                confidences[low_mask] = self._branch_confidence(clf2, X[low_mask])
             elif low_labels is not None and len(low_labels) == 1:
                 # Single low class — assign it directly
                 results[low_mask] = low_labels[0]
+                confidences[low_mask] = 100.0
             else:
                 results[low_mask] = "UNKNOWN"
+                confidences[low_mask] = 0.0
 
-        return results
+        return results, confidences
 
     # ── Batch preprocessing ──────────────────────────────────────────
     def _preprocess_batch(self, X_raw, algo_name):
@@ -588,6 +662,9 @@ class MLEngineMixin:
                         if keep_idx is not None and len(keep_idx) < len(y_hist):
                             X_hist = X_hist[keep_idx]
                             y_hist = y_hist[keep_idx]
+                            # Persist the trimmed cache to disk
+                            np.save(cache_X_path, X_hist)
+                            np.save(cache_y_path, y_hist)
                             log(f"[CACHE] Trimmed to {len(y_hist)} samples via stratified window")
 
                     # Merge batch (X_batch: N rows, y_batch: N labels)
@@ -620,10 +697,11 @@ class MLEngineMixin:
                             y_batch = np.array([current_y] * len(X_batch_list))
                             X_all = np.vstack([X_hist_processed, X_batch])
                             y_all = np.append(y_hist, y_batch)
-                            # Build cache for next time
-                            np.save(cache_X_path, np.vstack([X_hist_processed, X_batch]))
-                            np.save(cache_y_path, np.append(y_hist, y_batch))
-                            log(f"[CACHE] Built feature cache with {len(y_all)} samples")
+                            # Defer cache write until user confirms save
+                            # (otherwise cancelled data becomes "ghost" samples)
+                            self._pending_cache_init = (X_all.copy(), y_all.copy())
+                            log(f"[CACHE] Built feature cache with {len(y_all)} samples "
+                                f"(pending user confirmation)")
                 except Exception as e:
                     log(f"[WARN] Read historical CSV failed: {e}")
 
@@ -632,6 +710,22 @@ class MLEngineMixin:
                 y_batch = np.array([current_y] * len(X_batch_list))
                 X_all = X_batch
                 y_all = y_batch
+
+            # ── Post-hoc StandardScaler ─────────────────────────────────
+            # _preprocess_spectrum() always receives single spectra and
+            # cannot fit a meaningful scaler.  Fit one here on the full
+            # assembled dataset for algorithms that benefit from scaling.
+            _scaler = None
+            _scale_algos = (
+                "SVM (Support Vector)", "KNN (K-Nearest)",
+                "PCR (Principal Comp)", "SVR (Support Vector)",
+                "LDA (Linear Discriminant)"
+            )
+            if algorithm in _scale_algos and X_all is not None and len(X_all) >= 2:
+                _scaler = StandardScaler()
+                X_all = _scaler.fit_transform(X_all)
+                log(f"[SCALER] StandardScaler fitted on {X_all.shape[0]} samples "
+                    f"({X_all.shape[1]} features)")
 
             if task_type == "Classification" and X_all is not None and y_all is not None and len(y_all) >= 2:
                 # Use last sample of batch for outlier detection (representative)
@@ -757,7 +851,29 @@ class MLEngineMixin:
                 if task_type == "Classification":
                     try:
                         log("Training hierarchical intensity-split classifier...")
-                        clf1, clf2, clf3 = self._hierarchical_train(X_all, y_all, current_model)
+                        # Compute raw (pre-SNV) absorbance means for a
+                        # meaningful HIGH / LOW split.  SNV forces every
+                        # spectrum to mean ≈ 0, making the split random.
+                        raw_means_all = None
+                        if os.path.exists(csv_filename):
+                            try:
+                                df_raw = pd.read_csv(csv_filename)
+                                hist_raw = df_raw.iloc[:, 2:].values
+                                hist_raw_means = np.mean(hist_raw, axis=1)
+                                batch_raw_means = np.array(
+                                    [np.mean(a) for a in raw_absorbances_list])
+                                raw_means_all = np.concatenate(
+                                    [hist_raw_means, batch_raw_means])
+                            except Exception:
+                                pass
+                        if raw_means_all is not None and len(raw_means_all) != len(y_all):
+                            log(f"[HIERARCHICAL] Raw-means length mismatch "
+                                f"({len(raw_means_all)} vs {len(y_all)}), "
+                                f"falling back to SNV means")
+                            raw_means_all = None
+                        clf1, clf2, clf3 = self._hierarchical_train(
+                            X_all, y_all, current_model,
+                            raw_means=raw_means_all)
                         if clf1 is not None or clf2 is not None or clf3 is not None:
                             hierarchical_data = {
                                 "clf1": clf1,
@@ -779,6 +895,17 @@ class MLEngineMixin:
                     report = classification_report(y_all, y_pred_all, output_dict=True, zero_division=0)
                     cm = confusion_matrix(y_all, y_pred_all)
                     acc = float(report.get("accuracy", 0))
+
+                    # Also evaluate hierarchical model if available
+                    if hierarchical_data is not None:
+                        try:
+                            self._hier_level_map = hierarchical_data
+                            y_pred_hier, _ = self._hierarchical_predict(X_all)
+                            hier_acc = np.mean(y_pred_hier == y_all)
+                            log(f"[HIERARCHICAL] Accuracy: {hier_acc*100:.1f}% "
+                                f"(flat: {acc*100:.1f}%)")
+                        except Exception:
+                            pass
                     perf_entry = {
                         "timestamp": datetime.now().strftime("%Y%m%d_%H%M%S"),
                         "n_samples": len(y_all),
@@ -858,7 +985,19 @@ class MLEngineMixin:
                         log(f"{n_saved} sample(s) permanently saved to matrix.")
 
                         # Update feature cache with ALL batch entries
-                        if os.path.exists(cache_X_path) and os.path.exists(cache_y_path):
+                        pending = getattr(self, '_pending_cache_init', None)
+                        if pending is not None:
+                            # Slow-path: cache was built but deferred until
+                            # user confirmed (avoids ghost samples on Cancel).
+                            try:
+                                X_pending, y_pending = pending
+                                np.save(cache_X_path, X_pending)
+                                np.save(cache_y_path, y_pending)
+                                log(f"[CACHE] Feature cache written ({len(y_pending)} samples)")
+                            except Exception:
+                                pass
+                            self._pending_cache_init = None
+                        elif os.path.exists(cache_X_path) and os.path.exists(cache_y_path):
                             try:
                                 X_cache = np.load(cache_X_path)
                                 y_cache = np.load(cache_y_path, allow_pickle=True)
@@ -888,8 +1027,10 @@ class MLEngineMixin:
 
                         if can_train and current_model is not None:
                             dump_data = {"classifier": current_model, "feature_mask": list(range(X_batch_list[0].shape[1]))}
-                            if scaler is not None:
-                                dump_data["preprocessor_scaler"] = scaler
+                            # Use post-hoc scaler if fitted, else legacy scaler
+                            _saved_scaler = _scaler if '_scaler' in dir() and _scaler is not None else scaler
+                            if _saved_scaler is not None:
+                                dump_data["preprocessor_scaler"] = _saved_scaler
                             if hierarchical_data is not None:
                                 dump_data["hierarchical"] = hierarchical_data
                             joblib.dump(dump_data, model_path)
@@ -923,7 +1064,17 @@ class MLEngineMixin:
                                 writer.writerow(row_data)
                         log("Data saved without model update.")
                         # Update cache even when model is not retrained
-                        if os.path.exists(cache_X_path) and os.path.exists(cache_y_path):
+                        pending = getattr(self, '_pending_cache_init', None)
+                        if pending is not None:
+                            try:
+                                X_pending, y_pending = pending
+                                np.save(cache_X_path, X_pending)
+                                np.save(cache_y_path, y_pending)
+                                log(f"[CACHE] Feature cache written ({len(y_pending)} samples)")
+                            except Exception:
+                                pass
+                            self._pending_cache_init = None
+                        elif os.path.exists(cache_X_path) and os.path.exists(cache_y_path):
                             try:
                                 X_cache = np.load(cache_X_path)
                                 y_cache = np.load(cache_y_path, allow_pickle=True)
@@ -940,6 +1091,8 @@ class MLEngineMixin:
                         error_msg = str(ex)
                         self.root.after(0, lambda msg=error_msg: messagebox.showerror("Storage Error", f"Failed to save: {msg}"))
                 else:
+                    # Discard pending cache to avoid ghost samples
+                    self._pending_cache_init = None
                     log("User discarded training. Matrix remains untouched.")
 
                 self.start_train_btn.config(state=tk.NORMAL)
