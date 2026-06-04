@@ -1,7 +1,7 @@
 # UbiNIRS-Hub — NIRScanner Python Terminal
 
 A full-featured touchscreen GUI application for the **TI DLP NIRScan Nano**
-near-infrared spectrometer. Built for Raspberry Pi with a 5-inch DSI display,
+near-infrared spectrometer. Built for Raspberry Pi 3A+ with a 5-inch DSI display,
 it combines hardware control, spectral visualization, and on-device machine
 learning for real-time material classification and regression.
 
@@ -53,7 +53,7 @@ learning for real-time material classification and regression.
 | Component | Notes |
 |-----------|-------|
 | **TI DLP NIRScan Nano** | USB HID interface |
-| **Raspberry Pi 4/5** | Tested on ARM aarch64 (Raspberry Pi OS) |
+| **Raspberry Pi 3A+** | ARM Cortex-A53, Broadcom BCM2837B0 |
 | **5-inch DSI Touchscreen** | 800×480 resolution, fullscreen UI |
 | **INA219 Current Sensor** (optional) | I²C addr 0x42 for battery monitoring |
 | **2S LiPo Battery** (optional) | ~1800 mAh rated capacity |
