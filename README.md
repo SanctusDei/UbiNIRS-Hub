@@ -16,6 +16,7 @@ Built on Raspberry Pi 3A+ with a TI DLP NIRScan Nano and 5-inch DSI touchscreen.
 | Compute | Raspberry Pi 3A+ (BCM2837B0, ARM Cortex-A53) |
 | Display | 5-inch DSI touchscreen (800×480) |
 | Battery monitor | INA219 over I²C (addr 0x42) — optional |
+| Enclosure | Custom 3D-printed housing (STL models in `stl/`) |
 | Power | 2S LiPo (7.4 V nominal) — optional |
 
 ---
@@ -84,6 +85,13 @@ NIRScanner-Python/
 │   ├── usb.cpp/h          USB abstraction
 │   ├── serial.c/h         Serial port helpers
 │   └── CMakeLists.txt     Build configuration
+│
+├── stl/                  3D-printed enclosure models
+│   ├── Base_Pedestal.STL
+│   ├── Base_Back_Cover.STL
+│   ├── Spectrometer_Container.STL
+│   ├── Lens_Cover.STL
+│   └── 3D_Printed_Experiment_Sheet.STL
 │
 ├── models/                Trained model pickles
 │   ├── 3D.pkl
