@@ -4,7 +4,6 @@
 inference, and field adaptation run entirely on-device. No cloud, no tethering.**
 
 Built on Raspberry Pi 3A+ with a TI DLP NIRScan Nano and 5-inch DSI touchscreen.
-Published at ACM UbiComp/ISWC 2026.
 <br><sub>Jiahao Gong · Xurui Li · Weiwei Jiang</sub>
 
 ---
@@ -196,11 +195,7 @@ current, cumulative mAh consumed, and estimated remaining capacity.
   author    = {Gong, Jiahao and Li, Xurui and Jiang, Weiwei},
   title     = {UbiNIRS-Hub: A Mobile Near-Infrared Sensing Platform for
                On-Device Field Adaptation in Ubiquitous Material Analysis},
-  booktitle = {Proceedings of the ACM International Joint Conference on
-               Pervasive and Ubiquitous Computing (UbiComp/ISWC '26)},
   year      = {2026},
-  publisher = {ACM},
-  address   = {Shanghai, China},
 }
 ```
 
