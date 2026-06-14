@@ -38,3 +38,20 @@ autom4te.cache/
 # OS
 .DS_Store
 Thumbs.db
+
+# Intermediate ML data
+dash/
+test_/
+data/task_3D_*
+
+# Development database
+*.db
+
+# Generated arrays and logs
+*.npy
+*.jsonl
+
+# SWIG auto-generated (regenerate via rebuild_so.sh)
+src/NIRScanner_wrap.cxx
+src/NIRScanner.py
+src/list.py
