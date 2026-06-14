@@ -26,9 +26,15 @@ import joblib
 class MLEngineMixin:
     """ML training, preprocessing, and inference mixed into SpectrometerApp."""
 
-    # Confidence threshold for prediction acceptance.
-    # Predictions with confidence below this value are rejected as UNKNOWN.
+    # ── Dual-gate rejection thresholds (Section 2.3.2) ──────────────────
+    # Gate 1: Classifier confidence must exceed this threshold.
     CONFIDENCE_THRESHOLD = 60.0
+    # Gate 2: PCA reconstruction error must stay below this threshold.
+    # Set as a multiplier on the 95th-percentile training error;
+    # for safety during initial deployment (no PCA fitted yet), a very
+    # high default effectively disables the gate.
+    PCA_ERROR_THRESHOLD_MULTIPLIER = 3.0
+    PCA_ERROR_FALLBACK_THRESHOLD = 1e9  # used when no PCA fitted
 
     # ── File path resolution ──────────────────────────────────────────
     def _get_task_data_paths(self, task):
@@ -217,10 +223,74 @@ class MLEngineMixin:
         except Exception:
             return np.full(n, 50.0)
 
+    # ── PCA reconstruction-error gate (Section 2.3.2, dual-gate) ─────
+    @staticmethod
+    def _fit_pca_gate(X_train, n_components=None):
+        """Fit a PCA model on known-class training data for OOD detection.
+
+        Returns (pca_model, threshold) where threshold is the 95th-percentile
+        reconstruction error on the training set multiplied by the configured
+        factor.  Samples whose reconstruction error exceeds this threshold
+        are rejected as UNKNOWN regardless of classifier confidence.
+
+        Parameters
+        ----------
+        X_train : ndarray (n_samples, n_features)
+            Preprocessed feature matrix of known-class samples.
+        n_components : int or None
+            Number of PCA components.  When None, auto-selects to retain
+            95 % of variance, clamped to [2, min(n_features, n_samples//2)].
+
+        Returns
+        -------
+        pca : sklearn.decomposition.PCA or None
+            Fitted PCA model, or None when data is too small.
+        threshold : float
+            Reconstruction-error rejection threshold.
+        """
+        from sklearn.decomposition import PCA
+
+        n_samples, n_features = X_train.shape
+        if n_samples < 4 or n_features < 2:
+            return None, 0.0
+
+        if n_components is None:
+            # Auto-select: retain 95 % variance, clamped to reasonable bounds
+            max_comp = min(n_features, max(n_samples // 2, 2))
+            min_comp = min(2, max_comp)
+            pca_full = PCA(n_components=max_comp, random_state=42)
+            pca_full.fit(X_train)
+            cumsum = np.cumsum(pca_full.explained_variance_ratio_)
+            n_comp_95 = int(np.searchsorted(cumsum, 0.95)) + 1
+            n_components = max(min_comp, min(n_comp_95, max_comp))
+
+        pca = PCA(n_components=n_components, random_state=42)
+        pca.fit(X_train)
+        X_reconstructed = pca.inverse_transform(pca.transform(X_train))
+        errors = np.mean((X_train - X_reconstructed) ** 2, axis=1)
+
+        # Threshold = 95th percentile × multiplier
+        p95 = np.percentile(errors, 95)
+        threshold = p95 * MLEngineMixin.PCA_ERROR_THRESHOLD_MULTIPLIER
+        return pca, float(threshold)
+
+    @staticmethod
+    def _compute_pca_error(pca_model, X):
+        """Compute per-sample PCA reconstruction error.
+
+        Returns 1-D float array of mean squared reconstruction errors.
+        Returns np.full(n, 0.0) when pca_model is None (gate disabled).
+        """
+        if pca_model is None:
+            return np.full(X.shape[0], 0.0)
+        X_reconstructed = pca_model.inverse_transform(pca_model.transform(X))
+        return np.mean((X - X_reconstructed) ** 2, axis=1)
+
     # ── Prediction metrics logging ────────────────────────────────────
     def _log_prediction_metrics(self, task, prediction, confidence, source,
                                  accepted, mode="single", batch_size=1,
-                                 hierarchical=False, vote_counts=None):
+                                 hierarchical=False, vote_counts=None,
+                                 pca_error=None, pca_threshold=None):
         """Write one JSON line to the task's inference log file."""
         paths = self._get_task_data_paths(task)
         log_path = paths["inference"]
@@ -239,6 +309,10 @@ class MLEngineMixin:
         }
         if vote_counts is not None:
             entry["vote_counts"] = vote_counts
+        if pca_error is not None:
+            entry["pca_error"] = float(round(float(pca_error), 8))
+        if pca_threshold is not None:
+            entry["pca_threshold"] = float(round(float(pca_threshold), 8))
         with open(log_path, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
@@ -489,10 +563,16 @@ class MLEngineMixin:
 
     # ── Stratified memory management ─────────────────────────────────
     def _get_stratified_keep_indices(self, df, max_total, log_fn=None):
-        """Return indices of rows to keep (not the trimmed dataframe), for cache alignment."""
+        """Return indices of rows to keep (not the trimmed dataframe), for cache alignment.
+
+        Implements stratified pruning (Section 2.3.1): each class contributes
+        removals proportional to its representation while preserving a minimum
+        of 3 exemplars per class.
+        """
         labels = df.iloc[:, 1].values
         unique_labels, counts = np.unique(labels, return_counts=True)
         n_classes = len(unique_labels)
+        # Minimum 3 samples per class (paper: "a minimum of three samples per class")
         min_per_class = max(3, max_total // n_classes // 2)
         keep_indices = []
         for label in unique_labels:
@@ -645,7 +725,9 @@ class MLEngineMixin:
                     return
 
             X_all, y_all = None, None
-            MAX_MEMORY_SAMPLES = 500  # 限制最大样本量，旧数据将被自动"遗忘"，保证树莓派永远不卡死
+            # Bounded replay buffer: max 100 samples with min 3 per class
+            # (Section 2.3.1 — stratified sliding-window memory management)
+            MAX_MEMORY_SAMPLES = 100
 
             if os.path.exists(csv_filename) and os.path.exists(cache_X_path):
                 try:
@@ -890,6 +972,26 @@ class MLEngineMixin:
                         log(f"[HIERARCHICAL] Training failed, falling back to flat classifier: {e}")
                         hierarchical_data = None
 
+                # --- Fit PCA reconstruction-error gate (Section 2.3.2 dual-gate) ---
+                pca_gate_data = None
+                if task_type == "Classification" and X_all is not None and len(X_all) >= 4:
+                    try:
+                        log("Fitting PCA reconstruction-error gate...")
+                        pca_model, pca_threshold = self._fit_pca_gate(X_all)
+                        if pca_model is not None:
+                            pca_gate_data = {
+                                "pca_model": pca_model,
+                                "pca_threshold": pca_threshold,
+                                "n_components": pca_model.n_components_,
+                            }
+                            log(f"[PCA_GATE] PCA fitted ({pca_model.n_components_} components), "
+                                f"rejection threshold = {pca_threshold:.6f}")
+                        else:
+                            log("[PCA_GATE] Skipped — insufficient data for PCA")
+                    except Exception as e:
+                        log(f"[PCA_GATE] Fitting failed, dual-gate disabled: {e}")
+                        pca_gate_data = None
+
                 if task_type == "Classification":
                     y_pred_all = current_model.predict(X_all)
                     report = classification_report(y_all, y_pred_all, output_dict=True, zero_division=0)
@@ -1013,7 +1115,8 @@ class MLEngineMixin:
 
                         try:
                             df_check = pd.read_csv(csv_filename)
-                            if len(df_check) > 600:
+                            # Trim CSV when it exceeds the replay buffer
+                            if len(df_check) > MAX_MEMORY_SAMPLES + 50:  # 50-entry buffer before trim
                                 trimmed = self._stratified_trim_df(df_check, MAX_MEMORY_SAMPLES, log)
                                 trimmed.to_csv(csv_filename, index=False)
                                 log(f"[CSV_TRIM] Reduced from {len(df_check)} to {len(trimmed)} rows")
@@ -1033,6 +1136,11 @@ class MLEngineMixin:
                                 dump_data["preprocessor_scaler"] = _saved_scaler
                             if hierarchical_data is not None:
                                 dump_data["hierarchical"] = hierarchical_data
+                            if pca_gate_data is not None:
+                                dump_data["pca_gate"] = pca_gate_data
+                                log(f"[PCA_GATE] Dual-gate enabled: "
+                                    f"confidence ≥ {self.CONFIDENCE_THRESHOLD:.0f}% "
+                                    f"AND PCA error ≤ {pca_gate_data['pca_threshold']:.6f}")
                             joblib.dump(dump_data, model_path)
 
                             conn = sqlite3.connect(self.db_path)

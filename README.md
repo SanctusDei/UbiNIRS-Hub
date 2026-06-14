@@ -3,12 +3,14 @@
 A full-featured touchscreen GUI application for the **TI DLP NIRScan Nano**
 near-infrared spectrometer. Built for Raspberry Pi 3A+ with a 5-inch DSI display,
 it combines hardware control, spectral visualization, and on-device machine
-learning for real-time material classification and regression.
+learning for real-time material classification and regression with field
+adaptation capabilities.
 
 <p align="center">
-  <i>Probing Sucrose Contents in Everyday Drinks Using Miniaturized Near-Infrared Spectroscopy Scanners</i><br>
-  <a href="https://doi.org/10.1145/3369834">ACM IMWUT 2020</a> &nbsp;|&nbsp;
-  <a href="https://doi.org/10.1145/3533426">ACM TOG 2022</a>
+  <i><b>UbiNIRS-Hub: A Mobile Near-Infrared Sensing Platform for On-Device
+  Field Adaptation in Ubiquitous Material Analysis</b></i><br>
+  ACM UbiComp/ISWC 2026 &nbsp;|&nbsp;
+  <a href="https://github.com/SanctusDei/UbiNIRS-Hub">GitHub</a>
 </p>
 
 ---
@@ -28,8 +30,9 @@ learning for real-time material classification and regression.
 - **Hierarchical classification** with per-branch confidence estimation
 - Spectral preprocessing: SNV, MSC, Savitzky-Golay smoothing, absorbance transform
 - **StandardScaler** pipeline persistence for KNN/SVM/LDA/SVR
-- **Stratified memory management** — rolling window of historical samples per class
-- Confidence thresholding with **UNKNOWN** rejection
+- **Stratified memory management** — bounded replay buffer (max 100 samples, min 3/class)
+- **Dual-gate rejection** (Section 2.3.2): classifier confidence + PCA reconstruction-error gate → UNKNOWN rejection
+- **On-device field adaptation** — incremental retraining without catastrophic forgetting
 - Leave-One-Out cross-validation
 
 ### 📋 Task Management
@@ -190,10 +193,18 @@ The application uses a **Mixin-based** architecture on top of Tkinter:
   disables UI controls on disconnect and re-enables on reconnect.
 - **Scan generation counter**: Prevents stale scan callbacks from overwriting current
   results after rapid re-scans.
-- **Stratified sample memory**: Rolling per-class windows keep training datasets
-  balanced without unbounded growth.
+- **Stratified sample memory**: Bounded replay buffer (max 100 samples, min 3 per
+  class) with proportional pruning — prevents memory domination by recently observed
+  classes and mitigates catastrophic forgetting (Section 2.3.1).
 - **Hierarchical classification**: Two-level (HIGH/LOW) split based on raw absorbance
-  mean, with per-branch SVC/RF/KNN classifiers and per-sample confidence scores.
+  mean, with per-branch SVC/RF/KNN classifiers and per-sample confidence scores
+  (Section 2.3.2).
+- **Dual-gate rejection mechanism**: Samples are accepted only when classifier
+  confidence exceeds the threshold AND PCA reconstruction error stays below the
+  learned upper bound — addresses the failure mode where classifiers confidently
+  mislabel distribution-shift samples in open-set NIR sensing (Section 2.3.2).
+- **On-device field adaptation**: Lightweight retraining pipeline allows the system
+  to incorporate novel materials without cloud connectivity or catastrophic forgetting.
 - **Dead sensor detection**: Rejects scans where peak-to-peak intensity < 1e-6
   (constant signal across all wavelengths).
 
@@ -223,7 +234,8 @@ The application uses a **Mixin-based** architecture on top of Tkinter:
 2. Tap **PREDICT** mode
 3. Scan an unknown sample
 4. The predicted class/value appears with confidence score
-5. Low-confidence predictions are rejected as **UNKNOWN**
+5. Low-confidence predictions are rejected as **UNKNOWN** via the dual-gate
+   mechanism (classifier confidence + PCA reconstruction error)
 
 ### Battery Monitoring
 
@@ -239,6 +251,17 @@ When an INA219 sensor is connected, the status bar shows:
 If you use this software in your research, please cite:
 
 ```bibtex
+@inproceedings{gong2026ubinirshub,
+  author = {Gong, Jiahao and Li, Xurui and Jiang, Weiwei},
+  title = {UbiNIRS-Hub: A Mobile Near-Infrared Sensing Platform for
+           On-Device Field Adaptation in Ubiquitous Material Analysis},
+  booktitle = {Proc. UbiComp/ISWC '26},
+  year = {2026},
+  publisher = {ACM},
+  address = {Shanghai, China},
+  doi = {10.1145/XXXXXXX.XXXXXXX}
+}
+
 @article{jiang2020probing,
   author = {Jiang, Weiwei and Marini, Gabriele and van Berkel, Niels
             and Sarsenbayeva, Zhanna and Tan, Zheyu and Luo, Chu and
@@ -284,5 +307,5 @@ distributions for their license terms.
 
 ## Contributors
 
-- **Weiwei Jiang** — original Python wrapper & GUI
+- **Weiwei Jiang** — original Python wrapper
 - **SanctusDei** — ML pipeline, hierarchical classifier, StandardScaler, dead sensor detection, task management, battery monitoring, auto-start deployment

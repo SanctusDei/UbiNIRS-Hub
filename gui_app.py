@@ -38,7 +38,7 @@ class SpectrometerApp(ScanWorkflowMixin, MLEngineMixin, TaskManagerMixin):
     def __init__(self, root):
       
         self.root = root
-        self.root.title("NIRS SPECTROMETER TERMINAL v1.0")
+        self.root.title("UbiNIRS-Hub v2.0")
         
         self.train_tag_var = tk.StringVar(value="")
         self.train_target_var = tk.StringVar(value="")

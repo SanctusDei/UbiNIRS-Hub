@@ -301,14 +301,17 @@ class ScanWorkflowMixin:
                 model = loaded_obj["classifier"]
                 hierarchical = loaded_obj.get("hierarchical")
                 scaler = loaded_obj.get("preprocessor_scaler")
+                pca_gate = loaded_obj.get("pca_gate")
             else:
                 model = loaded_obj
                 hierarchical = None
                 scaler = None
+                pca_gate = None
 
             task_type = task.get("task_type", "Classification")
             all_predictions = []
             all_confidences = []
+            all_pca_errors = []  # for dual-gate batch evaluation
 
             for abs_data in batch_absorbances:
                 X_filtered, _ = self._preprocess_spectrum(
@@ -332,6 +335,15 @@ class ScanWorkflowMixin:
                         all_predictions.append(str(pred[0]))
                         conf, source = self._compute_confidence(model, X_filtered)
                     all_confidences.append(conf)
+
+                    # Compute PCA reconstruction error for dual-gate
+                    pca_err = None
+                    if pca_gate is not None and pca_gate.get("pca_model") is not None:
+                        from gui_ml import MLEngineMixin
+                        pca_err = float(MLEngineMixin._compute_pca_error(
+                            pca_gate["pca_model"], X_filtered)[0])
+                    all_pca_errors.append(pca_err)
+
                     if not hasattr(self, '_batch_conf_source'):
                         self._batch_conf_source = source
                 else:
@@ -352,17 +364,41 @@ class ScanWorkflowMixin:
                 votes_for = vote_counts.most_common(1)[0][1]
                 avg_confidence = np.mean(all_confidences)
 
-                # Threshold check
-                accepted = avg_confidence >= self.CONFIDENCE_THRESHOLD
+                # ── Dual-gate acceptance for batch (Section 2.3.2) ─────────
+                gate1_ok = avg_confidence >= self.CONFIDENCE_THRESHOLD
+                # Gate 2: check if any batch sample fails PCA gate
+                gate2_ok = True
+                pca_violations = 0
+                avg_pca_error = None
+                valid_pca_errors = []
+                if pca_gate is not None and pca_gate.get("pca_model") is not None:
+                    valid_pca_errors = [e for e in all_pca_errors if e is not None]
+                    if valid_pca_errors:
+                        avg_pca_error = float(np.mean(valid_pca_errors))
+                        pca_threshold = float(pca_gate.get("pca_threshold", 1e9))
+                        pca_violations = sum(1 for e in valid_pca_errors if e > pca_threshold)
+                        # Reject batch if >50% of samples fail PCA gate
+                        gate2_ok = pca_violations <= len(valid_pca_errors) // 2
+                    else:
+                        gate2_ok = True
+
+                accepted = gate1_ok and gate2_ok
                 if not accepted:
                     final_result = "UNKNOWN"
+                    reasons = []
+                    if not gate1_ok:
+                        reasons.append(f"CONF {avg_confidence:.1f}% "
+                                       f"< {self.CONFIDENCE_THRESHOLD:.0f}%")
+                    if not gate2_ok:
+                        reasons.append(
+                            f"PCA err ({pca_violations}/{len(valid_pca_errors)} "
+                            f"samples exceed)")
+                    reason_str = " + ".join(reasons) if reasons else "threshold"
                     display_text = (f"[ BATCH ANALYSIS COMPLETE ]\n\n"
                                     f"RESULT: UNKNOWN\n"
-                                    f"CONF:  {avg_confidence:.1f}% "
-                                    f"(<{self.CONFIDENCE_THRESHOLD:.0f}%)\n"
+                                    f"{reason_str}\n"
                                     f"BATCH: {len(all_predictions)} SCANS")
-                    detail = (f"REJECTED: avg confidence {avg_confidence:.1f}% "
-                              f"below threshold {self.CONFIDENCE_THRESHOLD:.0f}%")
+                    detail = (f"REJECTED: {reason_str}")
                 else:
                     display_text = (f"[ BATCH ANALYSIS COMPLETE ]\n\n"
                                     f"RESULT: {final_result}\n"
@@ -373,12 +409,16 @@ class ScanWorkflowMixin:
                 self.predict_detail_var.set(detail)
 
                 # Log batch prediction
+                pca_threshold_val = (float(pca_gate.get("pca_threshold"))
+                                     if pca_gate and pca_gate.get("pca_model") else None)
                 self._log_prediction_metrics(
                     task, final_result, avg_confidence, confidence_source,
                     accepted=accepted, mode="batch",
                     batch_size=len(all_predictions),
                     hierarchical=(hierarchical and hierarchical.get("clf2") is not None),
-                    vote_counts=dict(vote_counts))
+                    vote_counts=dict(vote_counts),
+                    pca_error=avg_pca_error,
+                    pca_threshold=pca_threshold_val)
             else:
                 final_val = np.mean(all_predictions)
                 std_val = np.std(all_predictions)
@@ -609,10 +649,12 @@ class ScanWorkflowMixin:
                     model = loaded_obj["classifier"]
                     hierarchical = loaded_obj.get("hierarchical")
                     scaler = loaded_obj.get("preprocessor_scaler")
+                    pca_gate = loaded_obj.get("pca_gate")
                 else:
                     model = loaded_obj
                     hierarchical = None
                     scaler = None
+                    pca_gate = None
 
                 X_filtered, _ = self._preprocess_spectrum(absorbances, algorithm)
                 if X_filtered is None:
@@ -639,36 +681,61 @@ class ScanWorkflowMixin:
                         final_result = str(pred[0])
                         confidence, source = self._compute_confidence(model, X_filtered)
 
-                    # Threshold check: reject low-confidence predictions
-                    accepted = confidence >= self.CONFIDENCE_THRESHOLD
+                    # ── Dual-gate acceptance (Section 2.3.2) ──────────
+                    # Gate 1: classifier confidence
+                    gate1_ok = confidence >= self.CONFIDENCE_THRESHOLD
+                    # Gate 2: PCA reconstruction error
+                    pca_error = None
+                    gate2_ok = True  # default: pass when PCA not fitted
+                    if pca_gate is not None and pca_gate.get("pca_model") is not None:
+                        from gui_ml import MLEngineMixin
+                        pca_error = float(MLEngineMixin._compute_pca_error(
+                            pca_gate["pca_model"], X_filtered)[0])
+                        pca_threshold = float(pca_gate.get("pca_threshold",
+                            MLEngineMixin.PCA_ERROR_FALLBACK_THRESHOLD))
+                        gate2_ok = pca_error <= pca_threshold
+
+                    accepted = gate1_ok and gate2_ok
                     if not accepted:
                         raw_result = final_result
                         final_result = "UNKNOWN"
+                        # Build rejection reason
+                        reasons = []
+                        if not gate1_ok:
+                            reasons.append(f"CONF {confidence:.1f}% "
+                                           f"< {self.CONFIDENCE_THRESHOLD:.0f}%")
+                        if not gate2_ok:
+                            reasons.append(f"PCA err {pca_error:.6f} "
+                                           f"> {pca_gate['pca_threshold']:.6f}")
+                        reason_str = " + ".join(reasons)
                         display_text = (f"[ ANALYSIS COMPLETE ]\n\n"
                                         f"RESULT: UNKNOWN\n"
-                                        f"CONF: {confidence:.1f}% "
-                                        f"(<{self.CONFIDENCE_THRESHOLD:.0f}%)")
+                                        f"{reason_str}")
                         if hasattr(self, 'predict_detail_var'):
                             self.predict_detail_var.set(
-                                f"REJECTED: confidence {confidence:.1f}% below "
-                                f"threshold {self.CONFIDENCE_THRESHOLD:.0f}% "
+                                f"REJECTED: {reason_str} "
                                 f"({source})"
                                 + (" [hierarchical]" if is_hier else ""))
                     else:
                         raw_result = final_result
+                        pca_str = f"\nPCA:  {pca_error:.6f}" if pca_error is not None else ""
                         display_text = (f"[ ANALYSIS COMPLETE ]\n\n"
                                         f"RESULT: {final_result}\n"
-                                        f"CONF: {confidence:.1f}%")
+                                        f"CONF: {confidence:.1f}%{pca_str}")
                         if hasattr(self, 'predict_detail_var'):
                             self.predict_detail_var.set(
                                 f"CONFIDENCE: {confidence:.1f}% ({source})"
                                 + (" [hierarchical]" if is_hier else ""))
 
                     # Log prediction metrics to inference file
+                    pca_threshold_val = (float(pca_gate.get("pca_threshold"))
+                                         if pca_gate and pca_gate.get("pca_model") else None)
                     self._log_prediction_metrics(
                         task, final_result, confidence, source,
                         accepted=accepted, mode="single",
-                        hierarchical=is_hier)
+                        hierarchical=is_hier,
+                        pca_error=pca_error,
+                        pca_threshold=pca_threshold_val)
                 else:
                     pred = model.predict(X_filtered)
                     final_val = float(np.squeeze(pred))
