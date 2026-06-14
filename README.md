@@ -1,10 +1,9 @@
 # UbiNIRS-Hub
 
-**A self-contained handheld NIR sensing platform that runs the full
-acquisition → preprocessing → inference → field-adaptation pipeline entirely
-on-device — no cloud, no tethering, no lab hardware.**
+**A self-contained handheld NIR sensing platform — acquisition, preprocessing,
+inference, and field adaptation run entirely on-device. No cloud, no tethering.**
 
-Built on Raspberry Pi 3A+ with a TI DLP NIRScan Nano and 5-inch touchscreen.
+Built on Raspberry Pi 3A+ with a TI DLP NIRScan Nano and 5-inch DSI touchscreen.
 Published at ACM UbiComp/ISWC 2026.
 <br><sub>Jiahao Gong · Xurui Li · Weiwei Jiang</sub>
 
@@ -12,127 +11,181 @@ Published at ACM UbiComp/ISWC 2026.
 
 ## Hardware
 
-| Component | Details |
-|-----------|---------|
+| Component | Notes |
+|-----------|-------|
 | Spectrometer | TI DLP NIRScan Nano (900–1700 nm, USB HID) |
 | Compute | Raspberry Pi 3A+ (BCM2837B0, ARM Cortex-A53) |
 | Display | 5-inch DSI touchscreen (800×480) |
-| Battery Monitor | INA219 over I²C (addr 0x42) — optional |
-| Power | 2S LiPo (7.4 V nominal, ~1800 mAh) — optional |
+| Battery monitor | INA219 over I²C (addr 0x42) — optional |
+| Power | 2S LiPo (7.4 V nominal) — optional |
 
 ---
 
 ## Quick Start
 
-```bash
-# 1. Clone
-git clone https://github.com/SanctusDei/UbiNIRS-Hub.git
-cd UbiNIRS-Hub
+### 1. Dependencies
 
-# 2. Install dependencies
+```bash
 sudo apt-get install libudev-dev libusb-1.0-0-dev
 pip install numpy scipy pandas scikit-learn joblib
-
-# 3. Compile the native library (Raspberry Pi)
-chmod +x rebuild_so.sh && ./rebuild_so.sh
-
-# 4. Launch
-sudo python3 main.py
 ```
 
-To auto-start on boot: `chmod +x setup_autostart.sh && ./setup_autostart.sh`
+### 2. Compile the native library (Raspberry Pi only)
 
-> **Note**: The NIRScan Nano requires **root** for USB HID access. See
-> [pyusb/libusb permissions](https://stackoverflow.com/questions/3738173).
-
----
-
-## Features
-
-### Spectral Acquisition
-- Hadamard & Column scan modes, configurable 900–1700 nm range
-- PGA gain control, lamp on/off, hibernation
-- Real-time absorbance / reflectance / intensity graph
-- SNR diagnostics and dead-sensor detection
-- Auto-save to timestamped CSVs (`data/spectra/`)
-
-### On-Device ML
-- **Classifiers**: SVM, Random Forest, KNN, LDA
-- **Regressors**: SVR, PLS
-- **Preprocessing pipeline**: SNV → Savitzky-Golay → derivative → scaling
-  (configurable per algorithm)
-- **Hierarchical classification**: two-level HIGH/LOW split via raw absorbance
-  mean, with per-branch classifiers and confidence scores
-- **Dual-gate rejection**: classifier confidence threshold + PCA reconstruction-error
-  gate — rejects out-of-distribution samples as `UNKNOWN`
-- **Stratified memory**: bounded replay buffer (≤100 samples, ≥3 per class)
-  with proportional pruning — prevents catastrophic forgetting
-- **On-device field adaptation**: incremental retraining without cloud connectivity
-
-### Task Management
-- SQLite-backed CRUD with card-based touch browser
-- Classification & regression task types with tag-based organization
-- LOOCV evaluation, batch prediction with majority voting
-- Model export/import (joblib `.pkl`)
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────┐
-│                SpectrometerApp                   │
-│    Main window · hardware heartbeat thread       │
-├─────────────────────────────────────────────────┤
-│  ScanWorkflowMixin     (gui_scan.py)             │
-│  MLEngineMixin         (gui_ml.py)               │
-│  TaskManagerMixin      (gui_tasks.py)            │
-├─────────────────────────────────────────────────┤
-│  NIRS.py  ←  _NIRScanner.so  ←  C++ SWIG layer  │
-│  INA219.py                                   │
-│  SQLite (spectral_tasks.db)                  │
-└─────────────────────────────────────────────────┘
+```bash
+chmod +x rebuild_so.sh
+./rebuild_so.sh
 ```
 
-### Key Design Decisions
+This regenerates the SWIG wrapper from `src/NIRScanner.i`, compiles the C++
+sources under `src/`, and links the final `_NIRScanner.so`.
 
-| Paper § | Concept | Implementation |
-|---------|---------|---------------|
-| §2.1 | Hardware heartbeat | Background poller thread; auto-disables UI on disconnect, restores on reconnect |
-| §2.2 | Preprocessing defaults | SNV + Savitzky-Golay 1st-derivative (window=11, polyorder=3) |
-| §2.3.1 | Stratified memory | ≤100 samples; per-class min³; proportional pruning on overflow |
-| §2.3.2 | Hierarchical classifier | HIGH/LOW splits on absorbance mean; per-branch SVC/KNN/RF |
-| §2.3.2 | Dual-gate rejection | `confidence_score > θ` ∧ `PCA_recon_error < τ` → accept; else → UNKNOWN |
-| §2.2 | Dead-sensor detection | Rejects scans with peak-to-peak intensity < 1e-6 |
+### 3. Launch
+
+```bash
+sudo python3 gui_app.py
+```
+
+> **Root required** — the NIRScan Nano uses USB HID. See
+> [pyusb permissions](https://stackoverflow.com/questions/3738173).
+
+### 4. Boot-time auto-start
+
+```bash
+chmod +x setup_autostart.sh
+./setup_autostart.sh
+```
+
+Configures a systemd `.desktop` entry and passwordless sudo so the GUI
+launches automatically on reboot.
 
 ---
 
 ## Project Structure
 
 ```
-UbiNIRS-Hub/
-├── main.py               Entry point
-├── gui_app.py            Main GUI (SpectrometerApp)
-├── gui_scan.py           Scan workflow mixin
-├── gui_ml.py             ML engine mixin
-├── gui_tasks.py          Task management mixin
-├── NIRS.py               Python wrapper for _NIRScanner.so
-├── INA219.py             INA219 battery driver
-├── rebuild_so.sh         Recompile native library
-├── setup_autostart.sh    Boot-time auto-launch
+NIRScanner-Python/
+├── gui_app.py             Main GUI (SpectrometerApp) — entry point
+├── gui_scan.py            Scan workflow mixin (acquisition, graph, CSV save)
+├── gui_ml.py              ML engine mixin (training, inference, memory)
+├── gui_tasks.py           Task management mixin (CRUD, card-based browser)
+├── NIRS.py                Python wrapper for _NIRScanner.so
+├── INA219.py              INA219 battery coulomb counter
+├── rebuild_so.sh          Recompile native library from C++ source
+├── setup_autostart.sh     Deploy auto-start on boot
 │
-├── src/                  C++ source + SWIG interface
-│   ├── NIRScanner.i      SWIG definition
-│   ├── NIRScanner.cpp/h  Python–C++ bridge
-│   ├── API.cpp/h         High-level scan API
-│   ├── dlpspec_*.c/h     TI DLP Spectrum Library
-│   ├── hid.c/hidapi.h    USB HID transport
-│   └── scripts/          Build scripts (py2/py3)
+├── src/                   C++ source & SWIG interface
+│   ├── NIRScanner.i       SWIG definition
+│   ├── NIRScanner.cpp/h   Python–C++ bridge
+│   ├── API.cpp/h          High-level scan API
+│   ├── dlpspec_*.c/h      TI DLP Spectrum Library
+│   ├── tpl.c/h            TivaWare Peripheral Library
+│   ├── hid.c/hidapi.h     USB HID transport
+│   ├── evm.cpp/h          EVM (evaluation module) driver
+│   ├── usb.cpp/h          USB abstraction
+│   ├── serial.c/h         Serial port helpers
+│   └── CMakeLists.txt     Build configuration
 │
-├── models/               Trained model pickles (.pkl)
+├── models/                Trained model pickles
+│   ├── 3D.pkl
+│   └── spectral_svm_pipeline.pkl
+│
 └── data/
-    └── spectra/          Timestamped spectral CSVs
+    └── spectra/           510 timestamped spectrum CSVs
 ```
+
+---
+
+## Architecture
+
+The GUI uses a **mixin-based** design on top of Tkinter:
+
+```
+┌──────────────────────────────────────────────┐
+│              SpectrometerApp                  │
+│  gui_app.py — window, hardware state,        │
+│  battery heartbeat, page navigation          │
+├──────────────────────────────────────────────┤
+│  ScanWorkflowMixin      gui_scan.py          │
+│  MLEngineMixin           gui_ml.py           │
+│  TaskManagerMixin        gui_tasks.py         │
+├──────────────────────────────────────────────┤
+│  NIRS.py   ←  _NIRScanner.so  ←  C++ SWIG   │
+│  INA219.py  (I²C battery sensor)             │
+│  SQLite     (spectral_tasks.db)              │
+└──────────────────────────────────────────────┘
+```
+
+### Key Design Decisions
+
+| Concept | Implementation |
+|---------|---------------|
+| **Hardware heartbeat** | Background poller thread; auto-disables UI on disconnect, restores on reconnect |
+| **Scan generation counter** | Prevents stale scan callbacks from overwriting results after rapid re-scans |
+| **Preprocessing pipeline** | SNV → Savitzky-Golay smoothing → derivative → StandardScaler (per-algorithm config) |
+| **Stratified memory** | ≤100 samples; ≥3 per class; proportional pruning prevents catastrophic forgetting |
+| **Hierarchical classifier** | Two-level HIGH/LOW split on raw absorbance mean; per-branch SVC/KNN/RF |
+| **Dual-gate rejection** | Classifier confidence > θ ∧ PCA reconstruction error < τ → accept; else → `UNKNOWN` |
+| **Dead-sensor detection** | Rejects scans with peak-to-peak intensity < 1e-6 |
+
+---
+
+## Features
+
+### Spectral Scanning
+- Hadamard & Column scan modes over configurable 900–1700 nm range
+- Real-time intensity / absorbance / reflectance graph display
+- PGA gain, lamp on/off, and hibernation control
+- SNR diagnostic scans
+- Auto-save as timestamped CSV (`data/spectra/`)
+
+### On-Device Machine Learning
+- **Classifiers**: SVM, Random Forest, KNN, LDA
+- **Regressors**: SVR, PLS
+- **Hierarchical classification** with per-branch confidence estimation
+- **Dual-gate sample admission**: confidence threshold + PCA reconstruction-error gate
+- **Stratified replay memory**: bounded buffer with class-balanced pruning
+- **On-device field adaptation**: incremental retraining without cloud connectivity
+- Leave-One-Out cross-validation
+
+### Task Management
+- SQLite-backed task CRUD with card-based touch browser
+- Classification & regression task types with tag-based organization
+- Model export/import (joblib `.pkl`)
+- Batch prediction with majority voting
+
+### System
+- INA219 battery coulomb counter with capacity estimation
+- System IP display with async refresh
+- Automatic hardware reconnection on USB disconnect
+- Fullscreen 800×480 DSI display with touch keyboard
+
+---
+
+## Usage
+
+### Scanning
+1. Open the **SCAN** page
+2. Press the large **SCAN** button
+3. Toggle **INT / ABS / REF** to switch graph modes
+4. Scans auto-save to `data/spectra/`
+
+### Training
+1. In **TASKS** → **+ NEW**, choose Classification or Regression
+2. Select an algorithm (SVM, RF, KNN, LDA, SVR, PLS)
+3. Scan reference samples, assign labels in the training UI
+4. Tap **TRAIN** — metrics display automatically
+5. The model saves to `models/` and is ready for prediction
+
+### Prediction
+1. From the **TASKS** page, select a trained task
+2. Switch to **PREDICT** mode
+3. Scan an unknown sample — the result appears with confidence score
+4. Low-confidence or out-of-distribution scans are rejected as `UNKNOWN` via the dual-gate mechanism
+
+### Battery
+When an INA219 sensor is connected, the status bar shows real-time voltage,
+current, cumulative mAh consumed, and estimated remaining capacity.
 
 ---
 
@@ -148,38 +201,6 @@ UbiNIRS-Hub/
   year      = {2026},
   publisher = {ACM},
   address   = {Shanghai, China},
-  doi       = {10.1145/XXXXXXX.XXXXXXX}
-}
-```
-
-### Related Work
-
-```bibtex
-@article{jiang2020probing,
-  author  = {Jiang, Weiwei and Marini, Gabriele and van Berkel, Niels
-             and Sarsenbayeva, Zhanna and Tan, Zheyu and Luo, Chu and
-             He, Xin and Dingler, Tilman and Goncalves, Jorge and
-             Kawahara, Yoshihiro and Kostakos, Vassilis},
-  title   = {Probing Sucrose Contents in Everyday Drinks Using
-             Miniaturized Near-Infrared Spectroscopy Scanners},
-  journal = {Proc. ACM Interact. Mob. Wearable Ubiquitous Technol.},
-  volume  = {3},
-  number  = {4},
-  year    = {2020},
-  doi     = {10.1145/3369834}
-}
-
-@article{jiang2022near,
-  author  = {Jiang, Weiwei and Yu, Difeng and Wang, Chaofan and
-             Sarsenbayeva, Zhanna and van Berkel, Niels and
-             Goncalves, Jorge and Kostakos, Vassilis},
-  title   = {Near-infrared Imaging for Information Embedding and
-             Extraction with Layered Structures},
-  journal = {ACM Trans. Graph.},
-  volume  = {42},
-  number  = {1},
-  year    = {2022},
-  doi     = {10.1145/3533426}
 }
 ```
 
@@ -194,10 +215,5 @@ UbiNIRS-Hub/
 
 ## License
 
-Includes TI DLP NIRscan Nano GUI and DLP Spectrum Library source. Refer to the
-original distributions for their license terms.
-
-## Contributors
-
-- **Weiwei Jiang** — original Python wrapper
-- **SanctusDei** — ML pipeline, hierarchical classifier, dual-gate rejection, task management, battery monitoring, auto-start deployment
+Includes source from the TI DLP NIRscan Nano GUI and DLP Spectrum Library.
+Refer to the original distributions for their license terms.
