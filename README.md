@@ -1,20 +1,12 @@
-<p align="center">
-  <h1 align="center">UbiNIRS-Hub</h1>
-  <p align="center"><b>A Mobile Near-Infrared Sensing Platform for On-Device<br>Field Adaptation in Ubiquitous Material Analysis</b></p>
-  <p align="center">
-    ACM UbiComp/ISWC 2026 · Jiahao Gong · Xurui Li · Weiwei Jiang
-    <br>
-    <a href="https://github.com/SanctusDei/UbiNIRS-Hub">GitHub</a> ·
-    <a href="#citation">Paper</a>
-  </p>
-</p>
+# UbiNIRS-Hub
 
----
+**A self-contained handheld NIR sensing platform that runs the full
+acquisition → preprocessing → inference → field-adaptation pipeline entirely
+on-device — no cloud, no tethering, no lab hardware.**
 
-A self-contained, battery-powered handheld NIR sensing terminal. Built on a
-Raspberry Pi 3A+ with a TI DLP NIRScan Nano and 5-inch touchscreen, it runs
-the full **acquisition → preprocessing → inference → adaptation** pipeline
-entirely at the edge — no cloud, no tethering.
+Built on Raspberry Pi 3A+ with a TI DLP NIRScan Nano and 5-inch touchscreen.
+Published at ACM UbiComp/ISWC 2026.
+<br><sub>Jiahao Gong · Xurui Li · Weiwei Jiang</sub>
 
 ---
 
@@ -141,19 +133,6 @@ UbiNIRS-Hub/
 └── data/
     └── spectra/          Timestamped spectral CSVs
 ```
-
----
-
-## Paper
-
-For a detailed description of the system design, adaptation pipeline, and
-experimental evaluation, see:
-
-> Jiahao Gong, Xurui Li, and Weiwei Jiang. **UbiNIRS-Hub: A Mobile Near-Infrared
-> Sensing Platform for On-Device Field Adaptation in Ubiquitous Material Analysis.**
-> In *Proc. ACM UbiComp/ISWC '26*, Shanghai, China.
-
-[`ubicomp26c-sub1309-i10.pdf`](https://github.com/SanctusDei/UbiNIRS-Hub)
 
 ---
 
