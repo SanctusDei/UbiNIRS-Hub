@@ -94,11 +94,9 @@ NIRScanner-Python/
 │   └── 3D_Printed_Experiment_Sheet.STL
 │
 ├── models/                Trained model pickles
-│   ├── 3D.pkl
-│   └── spectral_svm_pipeline.pkl
 │
 └── data/
-    └── spectra/           510 timestamped spectrum CSVs
+    └── spectra/           spectrum CSVs
 ```
 
 ---
